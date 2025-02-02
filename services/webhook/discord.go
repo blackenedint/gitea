@@ -159,8 +159,9 @@ func (d discordConvertor) Push(p *api.PushPayload) (DiscordPayload, error) {
 		message := strings.TrimRight(strings.SplitN(commit.Message, "\n", 2)[0], "\r")
 
 		// a limit of 50 is set because GitHub does the same
-		if utf8.RuneCountInString(message) > 50 {
-			message = fmt.Sprintf("%.47s...", message)
+		// tony; changed, limit to 120 instead of 50, 50 is just too short.
+		if utf8.RuneCountInString(message) > 120 {
+			message = fmt.Sprintf("%.117s...", message)
 		}
 		text += fmt.Sprintf("[%s](%s) %s - %s", commit.ID[:7], commit.URL, message, commit.Author.Name)
 		// add linebreak to each commit but the last
