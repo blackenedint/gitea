@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"html/template"
+	"maps"
 	"net/http"
 	"slices"
 	"sort"
@@ -109,7 +110,7 @@ func NewIssue(ctx *context.Context) {
 	body := ctx.FormString("body")
 	ctx.Data["BodyQuery"] = body
 
-	isProjectsEnabled := ctx.Repo.CanRead(unit.TypeProjects)
+	isProjectsEnabled := ctx.Repo.Permission.CanRead(unit.TypeProjects)
 	ctx.Data["IsProjectsEnabled"] = isProjectsEnabled
 	ctx.Data["IsAttachmentEnabled"] = setting.Attachment.Enabled
 	upload.AddUploadContext(ctx, "comment")
@@ -120,11 +121,9 @@ func NewIssue(ctx *context.Context) {
 	}
 
 	pageMetaData.MilestonesData.SelectedMilestoneID = ctx.FormInt64("milestone")
-	pageMetaData.ProjectsData.SelectedProjectID = ctx.FormInt64("project")
-	if pageMetaData.ProjectsData.SelectedProjectID > 0 {
-		if len(ctx.Req.URL.Query().Get("project")) > 0 {
-			ctx.Data["redirect_after_creation"] = "project"
-		}
+	pageMetaData.ProjectsData.SelectedProjectIDs, _ = base.StringsToInt64s(strings.Split(ctx.FormString("project"), ","))
+	if len(pageMetaData.ProjectsData.SelectedProjectIDs) == 1 {
+		ctx.Data["redirect_after_creation"] = "project"
 	}
 
 	tags, err := repo_model.GetTagNamesByRepoID(ctx, ctx.Repo.Repository.ID)
@@ -136,9 +135,7 @@ func NewIssue(ctx *context.Context) {
 
 	ret := issue_service.ParseTemplatesFromDefaultBranch(ctx.Repo.Repository, ctx.Repo.GitRepo)
 	templateLoaded, errs := setTemplateIfExists(ctx, issueTemplateKey, IssueTemplateCandidates, pageMetaData)
-	for k, v := range errs {
-		ret.TemplateErrors[k] = v
-	}
+	maps.Copy(ret.TemplateErrors, errs)
 	if ctx.Written() {
 		return
 	}
@@ -147,7 +144,7 @@ func NewIssue(ctx *context.Context) {
 		ctx.Flash.Warning(renderErrorOfTemplates(ctx, ret.TemplateErrors), true)
 	}
 
-	ctx.Data["HasIssuesOrPullsWritePermission"] = ctx.Repo.CanWrite(unit.TypeIssues)
+	ctx.Data["HasIssuesOrPullsWritePermission"] = ctx.Repo.Permission.CanWrite(unit.TypeIssues)
 
 	if !issueConfig.BlankIssuesEnabled && hasTemplates && !templateLoaded {
 		// The "issues/new" and "issues/new/choose" share the same query parameters "project" and "milestone", if blank issues are disabled, just redirect to the "issues/choose" page with these parameters.
@@ -173,7 +170,7 @@ func renderErrorOfTemplates(ctx *context.Context, errs map[string]error) templat
 	flashError, err := ctx.RenderToHTML(tplAlertDetails, map[string]any{
 		"Message": ctx.Tr("repo.issues.choose.ignore_invalid_templates"),
 		"Summary": ctx.Tr("repo.issues.choose.invalid_templates", len(errs)),
-		"Details": utils.SanitizeFlashErrorString(strings.Join(lines, "\n")),
+		"Details": utils.EscapeFlashErrorString(strings.Join(lines, "\n")),
 	})
 	if err != nil {
 		log.Debug("render flash error: %v", err)
@@ -217,17 +214,17 @@ func DeleteIssue(ctx *context.Context) {
 		return
 	}
 
-	if err := issue_service.DeleteIssue(ctx, ctx.Doer, ctx.Repo.GitRepo, issue); err != nil {
+	if err := issue_service.DeleteIssue(ctx, ctx.Doer, issue); err != nil {
 		ctx.ServerError("DeleteIssueByID", err)
 		return
 	}
 
 	if issue.IsPull {
-		ctx.Redirect(fmt.Sprintf("%s/pulls", ctx.Repo.Repository.Link()), http.StatusSeeOther)
+		ctx.Redirect(ctx.Repo.Repository.Link()+"/pulls", http.StatusSeeOther)
 		return
 	}
 
-	ctx.Redirect(fmt.Sprintf("%s/issues", ctx.Repo.Repository.Link()), http.StatusSeeOther)
+	ctx.Redirect(ctx.Repo.Repository.Link()+"/issues", http.StatusSeeOther)
 }
 
 func toSet[ItemType any, KeyType comparable](slice []ItemType, keyFunc func(ItemType) KeyType) container.Set[KeyType] {
@@ -255,7 +252,7 @@ func ValidateRepoMetasForNewIssue(ctx *context.Context, form forms.CreateIssueFo
 	inputLabelIDs, _ := base.StringsToInt64s(strings.Split(form.LabelIDs, ","))
 	candidateLabels := toSet(pageMetaData.LabelsData.AllLabels, func(label *issues_model.Label) int64 { return label.ID })
 	if len(inputLabelIDs) > 0 && !candidateLabels.Contains(inputLabelIDs...) {
-		ctx.NotFound("", nil)
+		ctx.NotFound(nil)
 		return ret
 	}
 	pageMetaData.LabelsData.SetSelectedLabelIDs(inputLabelIDs)
@@ -263,7 +260,7 @@ func ValidateRepoMetasForNewIssue(ctx *context.Context, form forms.CreateIssueFo
 	allMilestones := append(slices.Clone(pageMetaData.MilestonesData.OpenMilestones), pageMetaData.MilestonesData.ClosedMilestones...)
 	candidateMilestones := toSet(allMilestones, func(milestone *issues_model.Milestone) int64 { return milestone.ID })
 	if form.MilestoneID > 0 && !candidateMilestones.Contains(form.MilestoneID) {
-		ctx.NotFound("", nil)
+		ctx.NotFound(nil)
 		return ret
 	}
 	pageMetaData.MilestonesData.SelectedMilestoneID = form.MilestoneID
@@ -271,18 +268,21 @@ func ValidateRepoMetasForNewIssue(ctx *context.Context, form forms.CreateIssueFo
 	allProjects := append(slices.Clone(pageMetaData.ProjectsData.OpenProjects), pageMetaData.ProjectsData.ClosedProjects...)
 	candidateProjects := toSet(allProjects, func(project *project_model.Project) int64 { return project.ID })
 	if form.ProjectID > 0 && !candidateProjects.Contains(form.ProjectID) {
-		ctx.NotFound("", nil)
+		ctx.NotFound(nil)
 		return ret
 	}
-	pageMetaData.ProjectsData.SelectedProjectID = form.ProjectID
+	pageMetaData.ProjectsData.SelectedProjectIDs = util.Iif(form.ProjectID > 0, []int64{form.ProjectID}, nil)
 
+	// prepare assignees
 	candidateAssignees := toSet(pageMetaData.AssigneesData.CandidateAssignees, func(user *user_model.User) int64 { return user.ID })
 	inputAssigneeIDs, _ := base.StringsToInt64s(strings.Split(form.AssigneeIDs, ","))
-	if len(inputAssigneeIDs) > 0 && !candidateAssignees.Contains(inputAssigneeIDs...) {
-		ctx.NotFound("", nil)
-		return ret
+	var assigneeIDStrings []string
+	for _, inputAssigneeID := range inputAssigneeIDs {
+		if candidateAssignees.Contains(inputAssigneeID) {
+			assigneeIDStrings = append(assigneeIDStrings, strconv.FormatInt(inputAssigneeID, 10))
+		}
 	}
-	pageMetaData.AssigneesData.SelectedAssigneeIDs = form.AssigneeIDs
+	pageMetaData.AssigneesData.SelectedAssigneeIDs = strings.Join(assigneeIDStrings, ",")
 
 	// Check if the passed reviewers (user/team) actually exist
 	var reviewers []*user_model.User
@@ -301,14 +301,14 @@ func ValidateRepoMetasForNewIssue(ctx *context.Context, form forms.CreateIssueFo
 			if rID < 0 { // negative reviewIDs represent team requests
 				team, ok := teamReviewersMap[-rID]
 				if !ok {
-					ctx.NotFound("", nil)
+					ctx.NotFound(nil)
 					return ret
 				}
 				teamReviewers = append(teamReviewers, team)
 			} else {
 				user, ok := userReviewersMap[rID]
 				if !ok {
-					ctx.NotFound("", nil)
+					ctx.NotFound(nil)
 					return ret
 				}
 				reviewers = append(reviewers, user)
@@ -344,9 +344,9 @@ func NewIssuePost(ctx *context.Context) {
 	labelIDs, assigneeIDs, milestoneID, projectID := validateRet.LabelIDs, validateRet.AssigneeIDs, validateRet.MilestoneID, validateRet.ProjectID
 
 	if projectID > 0 {
-		if !ctx.Repo.CanRead(unit.TypeProjects) {
+		if !ctx.Repo.Permission.CanRead(unit.TypeProjects) {
 			// User must also be able to see the project.
-			ctx.Error(http.StatusBadRequest, "user hasn't permissions to read projects")
+			ctx.HTTPError(http.StatusBadRequest, "user hasn't permissions to read projects")
 			return
 		}
 	}
@@ -385,7 +385,7 @@ func NewIssuePost(ctx *context.Context) {
 
 	if err := issue_service.NewIssue(ctx, repo, issue, labelIDs, attachments, assigneeIDs, projectID); err != nil {
 		if repo_model.IsErrUserDoesNotHaveAccessToRepo(err) {
-			ctx.Error(http.StatusBadRequest, "UserDoesNotHaveAccessToRepo", err.Error())
+			ctx.HTTPError(http.StatusBadRequest, "UserDoesNotHaveAccessToRepo", err.Error())
 		} else if errors.Is(err, user_model.ErrBlockedUser) {
 			ctx.JSONError(ctx.Tr("repo.issues.new.blocked_user"))
 		} else {

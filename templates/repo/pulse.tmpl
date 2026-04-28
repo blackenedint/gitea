@@ -1,12 +1,12 @@
 <h2 class="ui header activity-header">
 	<span>{{DateUtils.AbsoluteLong .DateFrom}} - {{DateUtils.AbsoluteLong .DateUntil}}</span>
 	<!-- Period -->
-	<div class="ui floating dropdown jump filter">
+	<div class="ui floating dropdown jump">
 		<div class="ui basic compact button">
 			{{ctx.Locale.Tr "repo.activity.period.filter_label"}} <strong>{{.PeriodText}}</strong>
 			{{svg "octicon-triangle-down" 14 "dropdown icon"}}
 		</div>
-		<div class="menu">
+		<div class="left menu">
 			<a class="{{if eq .Period "daily"}}active {{end}}item" href="{{$.RepoLink}}/activity/daily">{{ctx.Locale.Tr "repo.activity.period.daily"}}</a>
 			<a class="{{if eq .Period "halfweekly"}}active {{end}}item" href="{{$.RepoLink}}/activity/halfweekly">{{ctx.Locale.Tr "repo.activity.period.halfweekly"}}</a>
 			<a class="{{if eq .Period "weekly"}}active {{end}}item" href="{{$.RepoLink}}/activity/weekly">{{ctx.Locale.Tr "repo.activity.period.weekly"}}</a>
@@ -59,21 +59,21 @@
 <div class="ui attached segment horizontal segments">
 	{{if .Permission.CanRead ctx.Consts.RepoUnitTypePullRequests}}
 		<a href="#merged-pull-requests" class="ui attached segment text center">
-			<span class="text purple">{{svg "octicon-git-pull-request"}}</span> <strong>{{.Activity.MergedPRCount}}</strong><br>
+			<span class="tw-text-purple">{{svg "octicon-git-pull-request"}}</span> <strong>{{.Activity.MergedPRCount}}</strong><br>
 			{{ctx.Locale.TrN .Activity.MergedPRCount "repo.activity.merged_prs_count_1" "repo.activity.merged_prs_count_n"}}
 		</a>
 		<a href="#proposed-pull-requests" class="ui attached segment text center">
-			<span class="text green">{{svg "octicon-git-branch"}}</span> <strong>{{.Activity.OpenedPRCount}}</strong><br>
+			<span class="tw-text-green">{{svg "octicon-git-branch"}}</span> <strong>{{.Activity.OpenedPRCount}}</strong><br>
 			{{ctx.Locale.TrN .Activity.OpenedPRCount "repo.activity.opened_prs_count_1" "repo.activity.opened_prs_count_n"}}
 		</a>
 	{{end}}
 	{{if .Permission.CanRead ctx.Consts.RepoUnitTypeIssues}}
 		<a href="#closed-issues" class="ui attached segment text center">
-			<span class="text red">{{svg "octicon-issue-closed"}}</span> <strong>{{.Activity.ClosedIssueCount}}</strong><br>
+			<span class="tw-text-red">{{svg "octicon-issue-closed"}}</span> <strong>{{.Activity.ClosedIssueCount}}</strong><br>
 			{{ctx.Locale.TrN .Activity.ClosedIssueCount "repo.activity.closed_issues_count_1" "repo.activity.closed_issues_count_n"}}
 		</a>
 		<a href="#new-issues" class="ui attached segment text center">
-			<span class="text green">{{svg "octicon-issue-opened"}}</span> <strong>{{.Activity.OpenedIssueCount}}</strong><br>
+			<span class="tw-text-green">{{svg "octicon-issue-opened"}}</span> <strong>{{.Activity.OpenedIssueCount}}</strong><br>
 			{{ctx.Locale.TrN .Activity.OpenedIssueCount "repo.activity.new_issues_count_1" "repo.activity.new_issues_count_n"}}
 		</a>
 	{{end}}
@@ -82,7 +82,7 @@
 
 {{if .Permission.CanRead ctx.Consts.RepoUnitTypeCode}}
 	{{if eq .Activity.Code.CommitCountInAllBranches 0}}
-		<div class="ui center aligned segment">
+		<div class="ui tw-text-center segment">
 		<h4 class="ui header">{{ctx.Locale.Tr "repo.activity.no_git_activity"}}</h4>
 		</div>
 	{{end}}
@@ -100,9 +100,9 @@
 				<strong>{{ctx.Locale.TrN .Activity.Code.ChangedFiles "repo.activity.git_stats_file_1" "repo.activity.git_stats_file_n" .Activity.Code.ChangedFiles}}</strong>
 				{{ctx.Locale.TrN .Activity.Code.ChangedFiles "repo.activity.git_stats_files_changed_1" "repo.activity.git_stats_files_changed_n"}}
 				{{ctx.Locale.Tr "repo.activity.git_stats_additions"}}
-				<strong class="text green">{{ctx.Locale.TrN .Activity.Code.Additions "repo.activity.git_stats_addition_1" "repo.activity.git_stats_addition_n" .Activity.Code.Additions}}</strong>
+				<strong class="tw-text-green">{{ctx.Locale.TrN .Activity.Code.Additions "repo.activity.git_stats_addition_1" "repo.activity.git_stats_addition_n" .Activity.Code.Additions}}</strong>
 				{{ctx.Locale.Tr "repo.activity.git_stats_and_deletions"}}
-				<strong class="text red">{{ctx.Locale.TrN .Activity.Code.Deletions "repo.activity.git_stats_deletion_1" "repo.activity.git_stats_deletion_n" .Activity.Code.Deletions}}</strong>.
+				<strong class="tw-text-red">{{ctx.Locale.TrN .Activity.Code.Deletions "repo.activity.git_stats_deletion_1" "repo.activity.git_stats_deletion_n" .Activity.Code.Deletions}}</strong>.
 			</div>
 			<div class="ui attached segment">
 				<div id="repo-activity-top-authors-chart"></div>

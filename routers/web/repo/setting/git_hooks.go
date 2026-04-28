@@ -7,6 +7,7 @@ import (
 	"net/http"
 
 	"code.gitea.io/gitea/modules/git"
+	"code.gitea.io/gitea/routers/web/repo"
 	"code.gitea.io/gitea/services/context"
 )
 
@@ -34,13 +35,14 @@ func GitHooksEdit(ctx *context.Context) {
 	hook, err := ctx.Repo.GitRepo.GetHook(name)
 	if err != nil {
 		if err == git.ErrNotValidHook {
-			ctx.NotFound("GetHook", err)
+			ctx.NotFound(err)
 		} else {
 			ctx.ServerError("GetHook", err)
 		}
 		return
 	}
 	ctx.Data["Hook"] = hook
+	ctx.Data["CodeEditorConfig"] = repo.CodeEditorConfig{Filename: name + ".sh", IndentStyle: "tab", TabWidth: 4}
 	ctx.HTML(http.StatusOK, tplGithookEdit)
 }
 
@@ -50,7 +52,7 @@ func GitHooksEditPost(ctx *context.Context) {
 	hook, err := ctx.Repo.GitRepo.GetHook(name)
 	if err != nil {
 		if err == git.ErrNotValidHook {
-			ctx.NotFound("GetHook", err)
+			ctx.NotFound(err)
 		} else {
 			ctx.ServerError("GetHook", err)
 		}

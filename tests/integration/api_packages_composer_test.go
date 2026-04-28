@@ -4,19 +4,19 @@
 package integration
 
 import (
-	"archive/zip"
 	"bytes"
 	"fmt"
 	"net/http"
 	neturl "net/url"
 	"testing"
 
-	"code.gitea.io/gitea/models/db"
 	"code.gitea.io/gitea/models/packages"
+	repo_model "code.gitea.io/gitea/models/repo"
 	"code.gitea.io/gitea/models/unittest"
 	user_model "code.gitea.io/gitea/models/user"
 	composer_module "code.gitea.io/gitea/modules/packages/composer"
 	"code.gitea.io/gitea/modules/setting"
+	"code.gitea.io/gitea/modules/test"
 	"code.gitea.io/gitea/routers/api/packages/composer"
 	"code.gitea.io/gitea/tests"
 
@@ -38,10 +38,8 @@ func TestPackageComposer(t *testing.T) {
 	packageLicense := "MIT"
 	packageBin := "./bin/script"
 
-	var buf bytes.Buffer
-	archive := zip.NewWriter(&buf)
-	w, _ := archive.Create("composer.json")
-	w.Write([]byte(`{
+	content := test.WriteZipArchive(map[string]string{
+		"composer.json": `{
 		"name": "` + packageName + `",
 		"description": "` + packageDescription + `",
 		"type": "` + packageType + `",
@@ -54,21 +52,19 @@ func TestPackageComposer(t *testing.T) {
 		"bin": [
 			"` + packageBin + `"
 		]
-	}`))
-	archive.Close()
-	content := buf.Bytes()
+	}`,
+	}).Bytes()
 
 	url := fmt.Sprintf("%sapi/packages/%s/composer", setting.AppURL, user.Name)
 
 	t.Run("ServiceIndex", func(t *testing.T) {
 		defer tests.PrintCurrentTest(t)()
 
-		req := NewRequest(t, "GET", fmt.Sprintf("%s/packages.json", url)).
+		req := NewRequest(t, "GET", url+"/packages.json").
 			AddBasicAuth(user.Name)
 		resp := MakeRequest(t, req, http.StatusOK)
 
-		var result composer.ServiceIndexResponse
-		DecodeJSON(t, resp, &result)
+		result := DecodeJSON(t, resp, &composer.ServiceIndexResponse{})
 
 		assert.Equal(t, url+"/search.json?q=%query%&type=%type%", result.SearchTemplate)
 		assert.Equal(t, url+"/p2/%package%.json", result.MetadataTemplate)
@@ -93,24 +89,24 @@ func TestPackageComposer(t *testing.T) {
 				AddBasicAuth(user.Name)
 			MakeRequest(t, req, http.StatusCreated)
 
-			pvs, err := packages.GetVersionsByPackageType(db.DefaultContext, user.ID, packages.TypeComposer)
+			pvs, err := packages.GetVersionsByPackageType(t.Context(), user.ID, packages.TypeComposer)
 			assert.NoError(t, err)
 			assert.Len(t, pvs, 1)
 
-			pd, err := packages.GetPackageDescriptor(db.DefaultContext, pvs[0])
+			pd, err := packages.GetPackageDescriptor(t.Context(), pvs[0])
 			assert.NoError(t, err)
 			assert.NotNil(t, pd.SemVer)
 			assert.IsType(t, &composer_module.Metadata{}, pd.Metadata)
 			assert.Equal(t, packageName, pd.Package.Name)
 			assert.Equal(t, packageVersion, pd.Version.Version)
 
-			pfs, err := packages.GetFilesByVersionID(db.DefaultContext, pvs[0].ID)
+			pfs, err := packages.GetFilesByVersionID(t.Context(), pvs[0].ID)
 			assert.NoError(t, err)
 			assert.Len(t, pfs, 1)
 			assert.Equal(t, fmt.Sprintf("%s-%s.%s.zip", vendorName, projectName, packageVersion), pfs[0].Name)
 			assert.True(t, pfs[0].IsLead)
 
-			pb, err := packages.GetBlobByID(db.DefaultContext, pfs[0].BlobID)
+			pb, err := packages.GetBlobByID(t.Context(), pfs[0].BlobID)
 			assert.NoError(t, err)
 			assert.Equal(t, int64(len(content)), pb.Size)
 
@@ -123,12 +119,12 @@ func TestPackageComposer(t *testing.T) {
 	t.Run("Download", func(t *testing.T) {
 		defer tests.PrintCurrentTest(t)()
 
-		pvs, err := packages.GetVersionsByPackageType(db.DefaultContext, user.ID, packages.TypeComposer)
+		pvs, err := packages.GetVersionsByPackageType(t.Context(), user.ID, packages.TypeComposer)
 		assert.NoError(t, err)
 		assert.Len(t, pvs, 1)
 		assert.Equal(t, int64(0), pvs[0].DownloadCount)
 
-		pfs, err := packages.GetFilesByVersionID(db.DefaultContext, pvs[0].ID)
+		pfs, err := packages.GetFilesByVersionID(t.Context(), pvs[0].ID)
 		assert.NoError(t, err)
 		assert.Len(t, pfs, 1)
 
@@ -138,7 +134,7 @@ func TestPackageComposer(t *testing.T) {
 
 		assert.Equal(t, content, resp.Body.Bytes())
 
-		pvs, err = packages.GetVersionsByPackageType(db.DefaultContext, user.ID, packages.TypeComposer)
+		pvs, err = packages.GetVersionsByPackageType(t.Context(), user.ID, packages.TypeComposer)
 		assert.NoError(t, err)
 		assert.Len(t, pvs, 1)
 		assert.Equal(t, int64(1), pvs[0].DownloadCount)
@@ -170,8 +166,7 @@ func TestPackageComposer(t *testing.T) {
 				AddBasicAuth(user.Name)
 			resp := MakeRequest(t, req, http.StatusOK)
 
-			var result composer.SearchResultResponse
-			DecodeJSON(t, resp, &result)
+			result := DecodeJSON(t, resp, &composer.SearchResultResponse{})
 
 			assert.Equal(t, c.ExpectedTotal, result.Total, "case %d: unexpected total hits", i)
 			assert.Len(t, result.Results, c.ExpectedResults, "case %d: unexpected result count", i)
@@ -185,8 +180,7 @@ func TestPackageComposer(t *testing.T) {
 			AddBasicAuth(user.Name)
 		resp := MakeRequest(t, req, http.StatusOK)
 
-		var result map[string][]string
-		DecodeJSON(t, resp, &result)
+		result := DecodeJSON(t, resp, map[string][]string{})
 
 		assert.Contains(t, result, "packageNames")
 		names := result["packageNames"]
@@ -201,8 +195,7 @@ func TestPackageComposer(t *testing.T) {
 			AddBasicAuth(user.Name)
 		resp := MakeRequest(t, req, http.StatusOK)
 
-		var result composer.PackageMetadataResponse
-		DecodeJSON(t, resp, &result)
+		result := DecodeJSON(t, resp, &composer.PackageMetadataResponse{})
 
 		assert.Contains(t, result.Packages, packageName)
 		pkgs := result.Packages[packageName]
@@ -217,5 +210,38 @@ func TestPackageComposer(t *testing.T) {
 		assert.Equal(t, "4f5fa464c3cb808a1df191dbf6cb75363f8b7072", pkgs[0].Dist.Checksum)
 		assert.Len(t, pkgs[0].Bin, 1)
 		assert.Equal(t, packageBin, pkgs[0].Bin[0])
+
+		// Test package linked to repository
+		repo1 := unittest.AssertExistsAndLoadBean(t, &repo_model.Repository{ID: 1})
+		userPkgs, err := packages.GetPackagesByType(t.Context(), user.ID, packages.TypeComposer)
+		assert.NoError(t, err)
+		assert.Len(t, userPkgs, 1)
+		assert.EqualValues(t, 0, userPkgs[0].RepoID)
+
+		err = packages.SetRepositoryLink(t.Context(), userPkgs[0].ID, repo1.ID)
+		assert.NoError(t, err)
+
+		req = NewRequest(t, "GET", fmt.Sprintf("%s/p2/%s/%s.json", url, vendorName, projectName)).
+			AddBasicAuth(user.Name)
+		resp = MakeRequest(t, req, http.StatusOK)
+
+		result = DecodeJSON(t, resp, &composer.PackageMetadataResponse{})
+
+		assert.Contains(t, result.Packages, packageName)
+		pkgs = result.Packages[packageName]
+		assert.Len(t, pkgs, 1)
+		assert.Equal(t, packageName, pkgs[0].Name)
+		assert.Equal(t, packageVersion, pkgs[0].Version)
+		assert.Equal(t, packageType, pkgs[0].Type)
+		assert.Equal(t, packageDescription, pkgs[0].Description)
+		assert.Len(t, pkgs[0].Authors, 1)
+		assert.Equal(t, packageAuthor, pkgs[0].Authors[0].Name)
+		assert.Equal(t, "zip", pkgs[0].Dist.Type)
+		assert.Equal(t, "4f5fa464c3cb808a1df191dbf6cb75363f8b7072", pkgs[0].Dist.Checksum)
+		assert.Len(t, pkgs[0].Bin, 1)
+		assert.Equal(t, packageBin, pkgs[0].Bin[0])
+		assert.Equal(t, repo1.HTMLURL(), pkgs[0].Source.URL)
+		assert.Equal(t, "git", pkgs[0].Source.Type)
+		assert.Equal(t, packageVersion, pkgs[0].Source.Reference)
 	})
 }

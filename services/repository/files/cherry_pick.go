@@ -5,12 +5,14 @@ package files
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 
 	repo_model "code.gitea.io/gitea/models/repo"
 	user_model "code.gitea.io/gitea/models/user"
 	"code.gitea.io/gitea/modules/git"
+	"code.gitea.io/gitea/modules/gitrepo"
 	"code.gitea.io/gitea/modules/log"
 	"code.gitea.io/gitea/modules/structs"
 	"code.gitea.io/gitea/services/pull"
@@ -34,23 +36,29 @@ func (err ErrCommitIDDoesNotMatch) Error() string {
 
 // CherryPick cherry-picks or reverts a commit to the given repository
 func CherryPick(ctx context.Context, repo *repo_model.Repository, doer *user_model.User, revert bool, opts *ApplyDiffPatchOptions) (*structs.FileResponse, error) {
-	if err := opts.Validate(ctx, repo, doer); err != nil {
+	gitRepo, closer, err := gitrepo.RepositoryFromContextOrOpen(ctx, repo)
+	if err != nil {
+		return nil, err
+	}
+	defer closer.Close()
+
+	if err := opts.Validate(ctx, repo, gitRepo, doer); err != nil {
 		return nil, err
 	}
 	message := strings.TrimSpace(opts.Message)
 
-	t, err := NewTemporaryUploadRepository(ctx, repo)
+	t, err := NewTemporaryUploadRepository(repo)
 	if err != nil {
 		log.Error("NewTemporaryUploadRepository failed: %v", err)
 	}
 	defer t.Close()
-	if err := t.Clone(opts.OldBranch, false); err != nil {
+	if err := t.Clone(ctx, opts.OldBranch, false); err != nil {
 		return nil, err
 	}
-	if err := t.SetDefaultIndex(); err != nil {
+	if err := t.SetDefaultIndex(ctx); err != nil {
 		return nil, err
 	}
-	if err := t.RefreshIndex(); err != nil {
+	if err := t.RefreshIndex(ctx); err != nil {
 		return nil, err
 	}
 
@@ -100,10 +108,10 @@ func CherryPick(ctx context.Context, repo *repo_model.Repository, doer *user_mod
 	}
 
 	if conflict {
-		return nil, fmt.Errorf("failed to merge due to conflicts")
+		return nil, errors.New("failed to merge due to conflicts")
 	}
 
-	treeHash, err := t.WriteTree()
+	treeHash, err := t.WriteTree(ctx)
 	if err != nil {
 		// likely non-sensical tree due to merge conflicts...
 		return nil, err
@@ -124,13 +132,13 @@ func CherryPick(ctx context.Context, repo *repo_model.Repository, doer *user_mod
 	if opts.Dates != nil {
 		commitOpts.AuthorTime, commitOpts.CommitterTime = &opts.Dates.Author, &opts.Dates.Committer
 	}
-	commitHash, err := t.CommitTree(commitOpts)
+	commitHash, err := t.CommitTree(ctx, commitOpts)
 	if err != nil {
 		return nil, err
 	}
 
 	// Then push this tree to NewBranch
-	if err := t.Push(doer, commitHash, opts.NewBranch); err != nil {
+	if err := t.Push(ctx, doer, commitHash, opts.NewBranch, false); err != nil {
 		return nil, err
 	}
 

@@ -5,10 +5,9 @@ package project
 
 import (
 	"context"
-	"fmt"
+	"errors"
 
 	"code.gitea.io/gitea/models/db"
-	"code.gitea.io/gitea/modules/log"
 	"code.gitea.io/gitea/modules/util"
 )
 
@@ -34,80 +33,45 @@ func deleteProjectIssuesByProjectID(ctx context.Context, projectID int64) error 
 	return err
 }
 
-// NumIssues return counter of all issues assigned to a project
-func (p *Project) NumIssues(ctx context.Context) int {
-	c, err := db.GetEngine(ctx).Table("project_issue").
-		Where("project_id=?", p.ID).
-		GroupBy("issue_id").
-		Cols("issue_id").
-		Count()
-	if err != nil {
-		log.Error("NumIssues: %v", err)
-		return 0
-	}
-	return int(c)
-}
-
-// NumClosedIssues return counter of closed issues assigned to a project
-func (p *Project) NumClosedIssues(ctx context.Context) int {
-	c, err := db.GetEngine(ctx).Table("project_issue").
-		Join("INNER", "issue", "project_issue.issue_id=issue.id").
-		Where("project_issue.project_id=? AND issue.is_closed=?", p.ID, true).
-		Cols("issue_id").
-		Count()
-	if err != nil {
-		log.Error("NumClosedIssues: %v", err)
-		return 0
-	}
-	return int(c)
-}
-
-// NumOpenIssues return counter of open issues assigned to a project
-func (p *Project) NumOpenIssues(ctx context.Context) int {
-	c, err := db.GetEngine(ctx).Table("project_issue").
-		Join("INNER", "issue", "project_issue.issue_id=issue.id").
-		Where("project_issue.project_id=? AND issue.is_closed=?", p.ID, false).
-		Cols("issue_id").
-		Count()
-	if err != nil {
-		log.Error("NumOpenIssues: %v", err)
-		return 0
-	}
-	return int(c)
-}
-
-func (c *Column) moveIssuesToAnotherColumn(ctx context.Context, newColumn *Column) error {
-	if c.ProjectID != newColumn.ProjectID {
-		return fmt.Errorf("columns have to be in the same project")
-	}
-
-	if c.ID == newColumn.ID {
-		return nil
-	}
-
+// GetColumnIssueNextSorting returns the sorting value to append an issue at the end of the column.
+func GetColumnIssueNextSorting(ctx context.Context, projectID, columnID int64) (int64, error) {
 	res := struct {
 		MaxSorting int64
 		IssueCount int64
 	}{}
-	if _, err := db.GetEngine(ctx).Select("max(sorting) as max_sorting, count(*) as issue_count").
+	if _, err := db.GetEngine(ctx).Select("max(sorting) AS max_sorting, count(*) AS issue_count").
 		Table("project_issue").
-		Where("project_id=?", newColumn.ProjectID).
-		And("project_board_id=?", newColumn.ID).
+		Where("project_id=?", projectID).
+		And("project_board_id=?", columnID).
 		Get(&res); err != nil {
-		return err
+		return 0, err
+	}
+	return util.Iif(res.IssueCount > 0, res.MaxSorting+1, 0), nil
+}
+
+func moveIssuesToAnotherColumn(ctx context.Context, oldColumn, newColumn *Column) error {
+	if oldColumn.ProjectID != newColumn.ProjectID {
+		return errors.New("columns have to be in the same project")
 	}
 
-	issues, err := c.GetIssues(ctx)
-	if err != nil {
-		return err
-	}
-	if len(issues) == 0 {
+	if oldColumn.ID == newColumn.ID {
 		return nil
 	}
 
-	nextSorting := util.Iif(res.IssueCount > 0, res.MaxSorting+1, 0)
+	movedIssues, err := oldColumn.GetIssues(ctx)
+	if err != nil {
+		return err
+	}
+	if len(movedIssues) == 0 {
+		return nil
+	}
+
+	nextSorting, err := GetColumnIssueNextSorting(ctx, newColumn.ProjectID, newColumn.ID)
+	if err != nil {
+		return err
+	}
 	return db.WithTx(ctx, func(ctx context.Context) error {
-		for i, issue := range issues {
+		for i, issue := range movedIssues {
 			issue.ProjectColumnID = newColumn.ID
 			issue.Sorting = nextSorting + int64(i)
 			if _, err := db.GetEngine(ctx).ID(issue.ID).Cols("project_board_id", "sorting").Update(issue); err != nil {

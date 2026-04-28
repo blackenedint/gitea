@@ -88,7 +88,7 @@ func SearchTeam(ctx context.Context, opts *SearchTeamOptions) (TeamList, int64, 
 	sess = db.SetSessionPagination(sess, opts)
 
 	teams := make([]*Team, 0, opts.PageSize)
-	count, err := sess.Where(cond).OrderBy("lower_name").FindAndCount(&teams)
+	count, err := sess.Where(cond).OrderBy("CASE WHEN name=? THEN '' ELSE lower_name END", OwnerTeamName).FindAndCount(&teams)
 	if err != nil {
 		return nil, 0, err
 	}
@@ -133,5 +133,8 @@ func GetTeamsByOrgIDs(ctx context.Context, orgIDs []int64) (TeamList, error) {
 
 func GetTeamsByIDs(ctx context.Context, teamIDs []int64) (map[int64]*Team, error) {
 	teams := make(map[int64]*Team, len(teamIDs))
+	if len(teamIDs) == 0 {
+		return teams, nil
+	}
 	return teams, db.GetEngine(ctx).Where(builder.In("`id`", teamIDs)).Find(&teams)
 }

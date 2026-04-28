@@ -47,11 +47,11 @@ export type DayData = {
   additions: number,
   deletions: number,
   commits: number,
-}
+};
 
 export type DayDataObject = {
   [timestamp: string]: DayData,
-}
+};
 
 export function fillEmptyStartDaysWithZeroes(startDays: number[], data: DayDataObject): DayData[] {
   const result: Record<string, any> = {};
@@ -65,8 +65,8 @@ export function fillEmptyStartDaysWithZeroes(startDays: number[], data: DayDataO
 
 let dateFormat: Intl.DateTimeFormat;
 
-// format a Date object to document's locale, but with 24h format from user's current locale because this
-// option is a personal preference of the user, not something that the document's locale should dictate.
+/** Format a Date object to document's locale, but with 24h format from user's current locale because this
+ *  option is a personal preference of the user, not something that the document's locale should dictate. */
 export function formatDatetime(date: Date | number): string {
   if (!dateFormat) {
     // TODO: replace `hour12` with `Intl.Locale.prototype.getHourCycles` once there is broad browser support
@@ -77,7 +77,6 @@ export function formatDatetime(date: Date | number): string {
       hour: 'numeric',
       hour12: !Number.isInteger(Number(new Intl.DateTimeFormat([], {hour: 'numeric'}).format())),
       minute: '2-digit',
-      timeZoneName: 'short',
     });
   }
   return dateFormat.format(date);

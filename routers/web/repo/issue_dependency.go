@@ -23,7 +23,7 @@ func AddDependency(ctx *context.Context) {
 
 	// Check if the Repo is allowed to have dependencies
 	if !ctx.Repo.CanCreateIssueDependencies(ctx, ctx.Doer, issue.IsPull) {
-		ctx.Error(http.StatusForbidden, "CanCreateIssueDependencies")
+		ctx.HTTPError(http.StatusForbidden, "CanCreateIssueDependencies")
 		return
 	}
 
@@ -55,9 +55,9 @@ func AddDependency(ctx *context.Context) {
 			return
 		}
 		// Can ctx.Doer read issues in the dep repo?
-		depRepoPerm, err := access_model.GetUserRepoPermission(ctx, dep.Repo, ctx.Doer)
+		depRepoPerm, err := access_model.GetDoerRepoPermission(ctx, dep.Repo, ctx.Doer)
 		if err != nil {
-			ctx.ServerError("GetUserRepoPermission", err)
+			ctx.ServerError("GetDoerRepoPermission", err)
 			return
 		}
 		if !depRepoPerm.CanReadIssuesOrPulls(dep.IsPull) {
@@ -97,7 +97,7 @@ func RemoveDependency(ctx *context.Context) {
 
 	// Check if the Repo is allowed to have dependencies
 	if !ctx.Repo.CanCreateIssueDependencies(ctx, ctx.Doer, issue.IsPull) {
-		ctx.Error(http.StatusForbidden, "CanCreateIssueDependencies")
+		ctx.HTTPError(http.StatusForbidden, "CanCreateIssueDependencies")
 		return
 	}
 
@@ -119,7 +119,7 @@ func RemoveDependency(ctx *context.Context) {
 	case "blocking":
 		depType = issues_model.DependencyTypeBlocking
 	default:
-		ctx.Error(http.StatusBadRequest, "GetDependecyType")
+		ctx.HTTPError(http.StatusBadRequest, "GetDependencyType")
 		return
 	}
 

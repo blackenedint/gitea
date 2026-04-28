@@ -13,7 +13,7 @@ import (
 	user_service "code.gitea.io/gitea/services/user"
 )
 
-// UpdateAvatar updates the Avatar of an User
+// UpdateAvatar updates the Avatar of a User
 func UpdateAvatar(ctx *context.APIContext) {
 	// swagger:operation POST /user/avatar user userUpdateAvatar
 	// ---
@@ -32,20 +32,20 @@ func UpdateAvatar(ctx *context.APIContext) {
 
 	content, err := base64.StdEncoding.DecodeString(form.Image)
 	if err != nil {
-		ctx.Error(http.StatusBadRequest, "DecodeImage", err)
+		ctx.APIError(http.StatusBadRequest, err)
 		return
 	}
 
 	err = user_service.UploadAvatar(ctx, ctx.Doer, content)
 	if err != nil {
-		ctx.Error(http.StatusInternalServerError, "UploadAvatar", err)
+		ctx.APIErrorInternal(err)
 		return
 	}
 
 	ctx.Status(http.StatusNoContent)
 }
 
-// DeleteAvatar deletes the Avatar of an User
+// DeleteAvatar deletes the Avatar of a User
 func DeleteAvatar(ctx *context.APIContext) {
 	// swagger:operation DELETE /user/avatar user userDeleteAvatar
 	// ---
@@ -57,7 +57,7 @@ func DeleteAvatar(ctx *context.APIContext) {
 	//     "$ref": "#/responses/empty"
 	err := user_service.DeleteAvatar(ctx, ctx.Doer)
 	if err != nil {
-		ctx.Error(http.StatusInternalServerError, "DeleteAvatar", err)
+		ctx.APIErrorInternal(err)
 		return
 	}
 

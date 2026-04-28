@@ -51,26 +51,34 @@ func ListHooks(ctx *context.APIContext) {
 	// for compatibility the default value is true
 	isSystemWebhook := optional.Some(true)
 	typeValue := ctx.FormString("type")
-	if typeValue == "default" {
+	switch typeValue {
+	case "default":
 		isSystemWebhook = optional.Some(false)
-	} else if typeValue == "all" {
+	case "all":
 		isSystemWebhook = optional.None[bool]()
 	}
+	listOptions := utils.GetListOptions(ctx)
+	opts := &webhook.ListSystemWebhookOptions{
+		ListOptions: listOptions,
+		IsSystem:    isSystemWebhook,
+	}
 
-	sysHooks, err := webhook.GetSystemOrDefaultWebhooks(ctx, isSystemWebhook)
+	sysHooks, total, err := webhook.GetGlobalWebhooks(ctx, opts)
 	if err != nil {
-		ctx.Error(http.StatusInternalServerError, "GetSystemWebhooks", err)
+		ctx.APIErrorInternal(err)
 		return
 	}
 	hooks := make([]*api.Hook, len(sysHooks))
 	for i, hook := range sysHooks {
 		h, err := webhook_service.ToHook(setting.AppURL+"/-/admin", hook)
 		if err != nil {
-			ctx.Error(http.StatusInternalServerError, "convert.ToHook", err)
+			ctx.APIErrorInternal(err)
 			return
 		}
 		hooks[i] = h
 	}
+	ctx.SetLinkHeader(total, listOptions.PageSize)
+	ctx.SetTotalCountHeader(total)
 	ctx.JSON(http.StatusOK, hooks)
 }
 
@@ -96,15 +104,15 @@ func GetHook(ctx *context.APIContext) {
 	hook, err := webhook.GetSystemOrDefaultWebhook(ctx, hookID)
 	if err != nil {
 		if errors.Is(err, util.ErrNotExist) {
-			ctx.NotFound()
+			ctx.APIErrorNotFound()
 		} else {
-			ctx.Error(http.StatusInternalServerError, "GetSystemOrDefaultWebhook", err)
+			ctx.APIErrorInternal(err)
 		}
 		return
 	}
 	h, err := webhook_service.ToHook("/-/admin/", hook)
 	if err != nil {
-		ctx.Error(http.StatusInternalServerError, "convert.ToHook", err)
+		ctx.APIErrorInternal(err)
 		return
 	}
 	ctx.JSON(http.StatusOK, h)
@@ -186,9 +194,9 @@ func DeleteHook(ctx *context.APIContext) {
 	hookID := ctx.PathParamInt64("id")
 	if err := webhook.DeleteDefaultSystemWebhook(ctx, hookID); err != nil {
 		if errors.Is(err, util.ErrNotExist) {
-			ctx.NotFound()
+			ctx.APIErrorNotFound()
 		} else {
-			ctx.Error(http.StatusInternalServerError, "DeleteDefaultSystemWebhook", err)
+			ctx.APIErrorInternal(err)
 		}
 		return
 	}

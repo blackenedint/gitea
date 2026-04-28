@@ -12,7 +12,9 @@ import (
 	"fmt"
 	"net"
 	"net/url"
+	"slices"
 	"strings"
+	"time"
 
 	"code.gitea.io/gitea/models/db"
 	"code.gitea.io/gitea/modules/container"
@@ -25,6 +27,11 @@ import (
 	"xorm.io/builder"
 	"xorm.io/xorm"
 )
+
+// Authorization codes should expire within 10 minutes per https://datatracker.ietf.org/doc/html/rfc6749#section-4.1.2
+const oauth2AuthorizationCodeValidity = 10 * time.Minute
+
+var ErrOAuth2AuthorizationCodeInvalidated = errors.New("oauth2 authorization code already invalidated")
 
 // OAuth2Application represents an OAuth2 client (RFC 6749)
 type OAuth2Application struct {
@@ -178,10 +185,7 @@ var base32Lower = base32.NewEncoding(lowerBase32Chars).WithPadding(base32.NoPadd
 
 // GenerateClientSecret will generate the client secret and returns the plaintext and saves the hash at the database
 func (app *OAuth2Application) GenerateClientSecret(ctx context.Context) (string, error) {
-	rBytes, err := util.CryptoRandomBytes(32)
-	if err != nil {
-		return "", err
-	}
+	rBytes := util.CryptoRandomBytes(32)
 	// Add a prefix to the base32, this is in order to make it easier
 	// for code scanners to grab sensitive tokens.
 	clientSecret := "gto_" + base32Lower.EncodeToString(rBytes)
@@ -208,12 +212,12 @@ func (app *OAuth2Application) GetGrantByUserID(ctx context.Context, userID int64
 	if has, err := db.GetEngine(ctx).Where("user_id = ? AND application_id = ?", userID, app.ID).Get(grant); err != nil {
 		return nil, err
 	} else if !has {
-		return nil, nil
+		return nil, nil //nolint:nilnil // return nil to indicate that the object does not exist
 	}
 	return grant, nil
 }
 
-// CreateGrant generates a grant for an user
+// CreateGrant generates a grant for a user
 func (app *OAuth2Application) CreateGrant(ctx context.Context, userID int64, scope string) (*OAuth2Grant, error) {
 	grant := &OAuth2Grant{
 		ApplicationID: app.ID,
@@ -288,35 +292,31 @@ type UpdateOAuth2ApplicationOptions struct {
 
 // UpdateOAuth2Application updates an oauth2 application
 func UpdateOAuth2Application(ctx context.Context, opts UpdateOAuth2ApplicationOptions) (*OAuth2Application, error) {
-	ctx, committer, err := db.TxContext(ctx)
-	if err != nil {
-		return nil, err
-	}
-	defer committer.Close()
+	return db.WithTx2(ctx, func(ctx context.Context) (*OAuth2Application, error) {
+		app, err := GetOAuth2ApplicationByID(ctx, opts.ID)
+		if err != nil {
+			return nil, err
+		}
+		if app.UID != opts.UserID {
+			return nil, errors.New("UID mismatch")
+		}
+		builtinApps := BuiltinApplications()
+		if _, builtin := builtinApps[app.ClientID]; builtin {
+			return nil, fmt.Errorf("failed to edit OAuth2 application: application is locked: %s", app.ClientID)
+		}
 
-	app, err := GetOAuth2ApplicationByID(ctx, opts.ID)
-	if err != nil {
-		return nil, err
-	}
-	if app.UID != opts.UserID {
-		return nil, errors.New("UID mismatch")
-	}
-	builtinApps := BuiltinApplications()
-	if _, builtin := builtinApps[app.ClientID]; builtin {
-		return nil, fmt.Errorf("failed to edit OAuth2 application: application is locked: %s", app.ClientID)
-	}
+		app.Name = opts.Name
+		app.RedirectURIs = opts.RedirectURIs
+		app.ConfidentialClient = opts.ConfidentialClient
+		app.SkipSecondaryAuthorization = opts.SkipSecondaryAuthorization
 
-	app.Name = opts.Name
-	app.RedirectURIs = opts.RedirectURIs
-	app.ConfidentialClient = opts.ConfidentialClient
-	app.SkipSecondaryAuthorization = opts.SkipSecondaryAuthorization
+		if err = updateOAuth2Application(ctx, app); err != nil {
+			return nil, err
+		}
+		app.ClientSecret = ""
 
-	if err = updateOAuth2Application(ctx, app); err != nil {
-		return nil, err
-	}
-	app.ClientSecret = ""
-
-	return app, committer.Commit()
+		return app, nil
+	})
 }
 
 func updateOAuth2Application(ctx context.Context, app *OAuth2Application) error {
@@ -357,23 +357,17 @@ func deleteOAuth2Application(ctx context.Context, id, userid int64) error {
 
 // DeleteOAuth2Application deletes the application with the given id and the grants and auth codes related to it. It checks if the userid was the creator of the app.
 func DeleteOAuth2Application(ctx context.Context, id, userid int64) error {
-	ctx, committer, err := db.TxContext(ctx)
-	if err != nil {
-		return err
-	}
-	defer committer.Close()
-	app, err := GetOAuth2ApplicationByID(ctx, id)
-	if err != nil {
-		return err
-	}
-	builtinApps := BuiltinApplications()
-	if _, builtin := builtinApps[app.ClientID]; builtin {
-		return fmt.Errorf("failed to delete OAuth2 application: application is locked: %s", app.ClientID)
-	}
-	if err := deleteOAuth2Application(ctx, id, userid); err != nil {
-		return err
-	}
-	return committer.Commit()
+	return db.WithTx(ctx, func(ctx context.Context) error {
+		app, err := GetOAuth2ApplicationByID(ctx, id)
+		if err != nil {
+			return err
+		}
+		builtinApps := BuiltinApplications()
+		if _, builtin := builtinApps[app.ClientID]; builtin {
+			return fmt.Errorf("failed to delete OAuth2 application: application is locked: %s", app.ClientID)
+		}
+		return deleteOAuth2Application(ctx, id, userid)
+	})
 }
 
 //////////////////////////////////////////////////////
@@ -395,6 +389,14 @@ func (code *OAuth2AuthorizationCode) TableName() string {
 	return "oauth2_authorization_code"
 }
 
+// IsExpired reports whether the authorization code is expired.
+func (code *OAuth2AuthorizationCode) IsExpired() bool {
+	if code.ValidUntil.IsZero() {
+		return true
+	}
+	return code.ValidUntil <= timeutil.TimeStampNow()
+}
+
 // GenerateRedirectURI generates a redirect URI for a successful authorization request. State will be used if not empty.
 func (code *OAuth2AuthorizationCode) GenerateRedirectURI(state string) (*url.URL, error) {
 	redirect, err := url.Parse(code.RedirectURI)
@@ -412,8 +414,14 @@ func (code *OAuth2AuthorizationCode) GenerateRedirectURI(state string) (*url.URL
 
 // Invalidate deletes the auth code from the database to invalidate this code
 func (code *OAuth2AuthorizationCode) Invalidate(ctx context.Context) error {
-	_, err := db.GetEngine(ctx).ID(code.ID).NoAutoCondition().Delete(code)
-	return err
+	affected, err := db.GetEngine(ctx).ID(code.ID).NoAutoCondition().Delete(code)
+	if err != nil {
+		return err
+	}
+	if affected == 0 {
+		return ErrOAuth2AuthorizationCodeInvalidated
+	}
+	return nil
 }
 
 // ValidateCodeChallenge validates the given verifier against the saved code challenge. This is part of the PKCE implementation.
@@ -440,20 +448,20 @@ func GetOAuth2AuthorizationByCode(ctx context.Context, code string) (auth *OAuth
 	if has, err := db.GetEngine(ctx).Where("code = ?", code).Get(auth); err != nil {
 		return nil, err
 	} else if !has {
-		return nil, nil
+		return nil, nil //nolint:nilnil // return nil to indicate that the object does not exist
 	}
 	auth.Grant = new(OAuth2Grant)
 	if has, err := db.GetEngine(ctx).ID(auth.GrantID).Get(auth.Grant); err != nil {
 		return nil, err
 	} else if !has {
-		return nil, nil
+		return nil, nil //nolint:nilnil // return nil to indicate that the object does not exist
 	}
 	return auth, nil
 }
 
 //////////////////////////////////////////////////////
 
-// OAuth2Grant represents the permission of an user for a specific application to access resources
+// OAuth2Grant represents the permission of a user for a specific application to access resources
 type OAuth2Grant struct {
 	ID            int64              `xorm:"pk autoincr"`
 	UserID        int64              `xorm:"INDEX unique(user_application)"`
@@ -473,14 +481,12 @@ func (grant *OAuth2Grant) TableName() string {
 
 // GenerateNewAuthorizationCode generates a new authorization code for a grant and saves it to the database
 func (grant *OAuth2Grant) GenerateNewAuthorizationCode(ctx context.Context, redirectURI, codeChallenge, codeChallengeMethod string) (code *OAuth2AuthorizationCode, err error) {
-	rBytes, err := util.CryptoRandomBytes(32)
-	if err != nil {
-		return &OAuth2AuthorizationCode{}, err
-	}
+	rBytes := util.CryptoRandomBytes(32)
 	// Add a prefix to the base32, this is in order to make it easier
 	// for code scanners to grab sensitive tokens.
 	codeSecret := "gta_" + base32Lower.EncodeToString(rBytes)
 
+	validUntil := time.Now().Add(oauth2AuthorizationCodeValidity)
 	code = &OAuth2AuthorizationCode{
 		Grant:               grant,
 		GrantID:             grant.ID,
@@ -488,6 +494,7 @@ func (grant *OAuth2Grant) GenerateNewAuthorizationCode(ctx context.Context, redi
 		Code:                codeSecret,
 		CodeChallenge:       codeChallenge,
 		CodeChallengeMethod: codeChallengeMethod,
+		ValidUntil:          timeutil.TimeStamp(validUntil.Unix()),
 	}
 	if err := db.Insert(ctx, code); err != nil {
 		return nil, err
@@ -511,12 +518,7 @@ func (grant *OAuth2Grant) IncreaseCounter(ctx context.Context) error {
 
 // ScopeContains returns true if the grant scope contains the specified scope
 func (grant *OAuth2Grant) ScopeContains(scope string) bool {
-	for _, currentScope := range strings.Split(grant.Scope, " ") {
-		if scope == currentScope {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(strings.Split(grant.Scope, " "), scope)
 }
 
 // SetNonce updates the current nonce value of a grant
@@ -535,7 +537,7 @@ func GetOAuth2GrantByID(ctx context.Context, id int64) (grant *OAuth2Grant, err 
 	if has, err := db.GetEngine(ctx).ID(id).Get(grant); err != nil {
 		return nil, err
 	} else if !has {
-		return nil, nil
+		return nil, nil //nolint:nilnil // return nil to indicate that the object does not exist
 	}
 	return grant, err
 }
@@ -616,8 +618,8 @@ func (err ErrOAuthApplicationNotFound) Unwrap() error {
 	return util.ErrNotExist
 }
 
-// GetActiveOAuth2SourceByName returns a OAuth2 AuthSource based on the given name
-func GetActiveOAuth2SourceByName(ctx context.Context, name string) (*Source, error) {
+// GetActiveOAuth2SourceByAuthName returns a OAuth2 AuthSource based on the given name
+func GetActiveOAuth2SourceByAuthName(ctx context.Context, name string) (*Source, error) {
 	authSource := new(Source)
 	has, err := db.GetEngine(ctx).Where("name = ? and type = ? and is_active = ?", name, OAuth2, true).Get(authSource)
 	if err != nil {
@@ -625,7 +627,7 @@ func GetActiveOAuth2SourceByName(ctx context.Context, name string) (*Source, err
 	}
 
 	if !has {
-		return nil, fmt.Errorf("oauth2 source not found, name: %q", name)
+		return nil, util.NewNotExistErrorf("oauth2 source not found, name: %q", name)
 	}
 
 	return authSource, nil

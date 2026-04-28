@@ -54,36 +54,36 @@ func GetIssueCommentReactions(ctx *context.APIContext) {
 	comment, err := issues_model.GetCommentByID(ctx, ctx.PathParamInt64("id"))
 	if err != nil {
 		if issues_model.IsErrCommentNotExist(err) {
-			ctx.NotFound(err)
+			ctx.APIErrorNotFound(err)
 		} else {
-			ctx.Error(http.StatusInternalServerError, "GetCommentByID", err)
+			ctx.APIErrorInternal(err)
 		}
 		return
 	}
 
 	if err := comment.LoadIssue(ctx); err != nil {
-		ctx.Error(http.StatusInternalServerError, "comment.LoadIssue", err)
+		ctx.APIErrorInternal(err)
 		return
 	}
 
 	if comment.Issue.RepoID != ctx.Repo.Repository.ID {
-		ctx.NotFound()
+		ctx.APIErrorNotFound()
 		return
 	}
 
-	if !ctx.Repo.CanReadIssuesOrPulls(comment.Issue.IsPull) {
-		ctx.Error(http.StatusForbidden, "GetIssueCommentReactions", errors.New("no permission to get reactions"))
+	if !ctx.Repo.Permission.CanReadIssuesOrPulls(comment.Issue.IsPull) {
+		ctx.APIError(http.StatusForbidden, errors.New("no permission to get reactions"))
 		return
 	}
 
 	reactions, _, err := issues_model.FindCommentReactions(ctx, comment.IssueID, comment.ID)
 	if err != nil {
-		ctx.Error(http.StatusInternalServerError, "FindCommentReactions", err)
+		ctx.APIErrorInternal(err)
 		return
 	}
 	_, err = reactions.LoadUsers(ctx, ctx.Repo.Repository)
 	if err != nil {
-		ctx.Error(http.StatusInternalServerError, "ReactionList.LoadUsers()", err)
+		ctx.APIErrorInternal(err)
 		return
 	}
 
@@ -175,7 +175,7 @@ func DeleteIssueCommentReaction(ctx *context.APIContext) {
 	//   schema:
 	//     "$ref": "#/definitions/EditReactionOption"
 	// responses:
-	//   "200":
+	//   "204":
 	//     "$ref": "#/responses/empty"
 	//   "403":
 	//     "$ref": "#/responses/forbidden"
@@ -191,30 +191,30 @@ func changeIssueCommentReaction(ctx *context.APIContext, form api.EditReactionOp
 	comment, err := issues_model.GetCommentByID(ctx, ctx.PathParamInt64("id"))
 	if err != nil {
 		if issues_model.IsErrCommentNotExist(err) {
-			ctx.NotFound(err)
+			ctx.APIErrorNotFound(err)
 		} else {
-			ctx.Error(http.StatusInternalServerError, "GetCommentByID", err)
+			ctx.APIErrorInternal(err)
 		}
 		return
 	}
 
 	if err = comment.LoadIssue(ctx); err != nil {
-		ctx.Error(http.StatusInternalServerError, "comment.LoadIssue() failed", err)
+		ctx.APIErrorInternal(err)
 		return
 	}
 
 	if comment.Issue.RepoID != ctx.Repo.Repository.ID {
-		ctx.NotFound()
+		ctx.APIErrorNotFound()
 		return
 	}
 
-	if !ctx.Repo.CanReadIssuesOrPulls(comment.Issue.IsPull) {
-		ctx.NotFound()
+	if !ctx.Repo.Permission.CanReadIssuesOrPulls(comment.Issue.IsPull) {
+		ctx.APIErrorNotFound()
 		return
 	}
 
-	if comment.Issue.IsLocked && !ctx.Repo.CanWriteIssuesOrPulls(comment.Issue.IsPull) {
-		ctx.Error(http.StatusForbidden, "ChangeIssueCommentReaction", errors.New("no permission to change reaction"))
+	if comment.Issue.IsLocked && !ctx.Repo.Permission.CanWriteIssuesOrPulls(comment.Issue.IsPull) {
+		ctx.APIError(http.StatusForbidden, errors.New("no permission to change reaction"))
 		return
 	}
 
@@ -223,7 +223,7 @@ func changeIssueCommentReaction(ctx *context.APIContext, form api.EditReactionOp
 		reaction, err := issue_service.CreateCommentReaction(ctx, ctx.Doer, comment, form.Reaction)
 		if err != nil {
 			if issues_model.IsErrForbiddenIssueReaction(err) || errors.Is(err, user_model.ErrBlockedUser) {
-				ctx.Error(http.StatusForbidden, err.Error(), err)
+				ctx.APIError(http.StatusForbidden, err)
 			} else if issues_model.IsErrReactionAlreadyExist(err) {
 				ctx.JSON(http.StatusOK, api.Reaction{
 					User:     convert.ToUser(ctx, ctx.Doer, ctx.Doer),
@@ -231,7 +231,7 @@ func changeIssueCommentReaction(ctx *context.APIContext, form api.EditReactionOp
 					Created:  reaction.CreatedUnix.AsTime(),
 				})
 			} else {
-				ctx.Error(http.StatusInternalServerError, "CreateCommentReaction", err)
+				ctx.APIErrorInternal(err)
 			}
 			return
 		}
@@ -245,11 +245,10 @@ func changeIssueCommentReaction(ctx *context.APIContext, form api.EditReactionOp
 		// DeleteIssueCommentReaction part
 		err = issues_model.DeleteCommentReaction(ctx, ctx.Doer.ID, comment.Issue.ID, comment.ID, form.Reaction)
 		if err != nil {
-			ctx.Error(http.StatusInternalServerError, "DeleteCommentReaction", err)
+			ctx.APIErrorInternal(err)
 			return
 		}
-		// ToDo respond 204
-		ctx.Status(http.StatusOK)
+		ctx.Status(http.StatusNoContent)
 	}
 }
 
@@ -298,26 +297,26 @@ func GetIssueReactions(ctx *context.APIContext) {
 	issue, err := issues_model.GetIssueWithAttrsByIndex(ctx, ctx.Repo.Repository.ID, ctx.PathParamInt64("index"))
 	if err != nil {
 		if issues_model.IsErrIssueNotExist(err) {
-			ctx.NotFound()
+			ctx.APIErrorNotFound()
 		} else {
-			ctx.Error(http.StatusInternalServerError, "GetIssueByIndex", err)
+			ctx.APIErrorInternal(err)
 		}
 		return
 	}
 
-	if !ctx.Repo.CanReadIssuesOrPulls(issue.IsPull) {
-		ctx.Error(http.StatusForbidden, "GetIssueReactions", errors.New("no permission to get reactions"))
+	if !ctx.Repo.Permission.CanReadIssuesOrPulls(issue.IsPull) {
+		ctx.APIError(http.StatusForbidden, errors.New("no permission to get reactions"))
 		return
 	}
 
 	reactions, count, err := issues_model.FindIssueReactions(ctx, issue.ID, utils.GetListOptions(ctx))
 	if err != nil {
-		ctx.Error(http.StatusInternalServerError, "FindIssueReactions", err)
+		ctx.APIErrorInternal(err)
 		return
 	}
 	_, err = reactions.LoadUsers(ctx, ctx.Repo.Repository)
 	if err != nil {
-		ctx.Error(http.StatusInternalServerError, "ReactionList.LoadUsers()", err)
+		ctx.APIErrorInternal(err)
 		return
 	}
 
@@ -408,7 +407,7 @@ func DeleteIssueReaction(ctx *context.APIContext) {
 	//   schema:
 	//     "$ref": "#/definitions/EditReactionOption"
 	// responses:
-	//   "200":
+	//   "204":
 	//     "$ref": "#/responses/empty"
 	//   "403":
 	//     "$ref": "#/responses/forbidden"
@@ -422,15 +421,15 @@ func changeIssueReaction(ctx *context.APIContext, form api.EditReactionOption, i
 	issue, err := issues_model.GetIssueWithAttrsByIndex(ctx, ctx.Repo.Repository.ID, ctx.PathParamInt64("index"))
 	if err != nil {
 		if issues_model.IsErrIssueNotExist(err) {
-			ctx.NotFound()
+			ctx.APIErrorNotFound()
 		} else {
-			ctx.Error(http.StatusInternalServerError, "GetIssueByIndex", err)
+			ctx.APIErrorInternal(err)
 		}
 		return
 	}
 
-	if issue.IsLocked && !ctx.Repo.CanWriteIssuesOrPulls(issue.IsPull) {
-		ctx.Error(http.StatusForbidden, "ChangeIssueCommentReaction", errors.New("no permission to change reaction"))
+	if issue.IsLocked && !ctx.Repo.Permission.CanWriteIssuesOrPulls(issue.IsPull) {
+		ctx.APIError(http.StatusForbidden, errors.New("no permission to change reaction"))
 		return
 	}
 
@@ -439,7 +438,7 @@ func changeIssueReaction(ctx *context.APIContext, form api.EditReactionOption, i
 		reaction, err := issue_service.CreateIssueReaction(ctx, ctx.Doer, issue, form.Reaction)
 		if err != nil {
 			if issues_model.IsErrForbiddenIssueReaction(err) || errors.Is(err, user_model.ErrBlockedUser) {
-				ctx.Error(http.StatusForbidden, err.Error(), err)
+				ctx.APIError(http.StatusForbidden, err)
 			} else if issues_model.IsErrReactionAlreadyExist(err) {
 				ctx.JSON(http.StatusOK, api.Reaction{
 					User:     convert.ToUser(ctx, ctx.Doer, ctx.Doer),
@@ -447,7 +446,7 @@ func changeIssueReaction(ctx *context.APIContext, form api.EditReactionOption, i
 					Created:  reaction.CreatedUnix.AsTime(),
 				})
 			} else {
-				ctx.Error(http.StatusInternalServerError, "CreateIssueReaction", err)
+				ctx.APIErrorInternal(err)
 			}
 			return
 		}
@@ -461,10 +460,9 @@ func changeIssueReaction(ctx *context.APIContext, form api.EditReactionOption, i
 		// DeleteIssueReaction part
 		err = issues_model.DeleteIssueReaction(ctx, ctx.Doer.ID, issue.ID, form.Reaction)
 		if err != nil {
-			ctx.Error(http.StatusInternalServerError, "DeleteIssueReaction", err)
+			ctx.APIErrorInternal(err)
 			return
 		}
-		// ToDo respond 204
-		ctx.Status(http.StatusOK)
+		ctx.Status(http.StatusNoContent)
 	}
 }

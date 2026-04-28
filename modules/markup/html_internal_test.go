@@ -23,12 +23,12 @@ const (
 
 // externalIssueLink an HTML link to an alphanumeric-style issue
 func externalIssueLink(baseURL, class, name string) string {
-	return link(util.URLJoin(baseURL, name), class, name)
+	return link(strings.TrimSuffix(baseURL, "/")+"/"+name, class, name)
 }
 
 // numericLink an HTML to a numeric-style issue
 func numericIssueLink(baseURL, class string, index int, marker string) string {
-	return link(util.URLJoin(baseURL, strconv.Itoa(index)), class, fmt.Sprintf("%s%d", marker, index))
+	return link(strings.TrimSuffix(baseURL, "/")+"/"+strconv.Itoa(index), class, fmt.Sprintf("%s%d", marker, index))
 }
 
 // link an HTML link
@@ -107,7 +107,7 @@ func TestRender_IssueIndexPattern2(t *testing.T) {
 		isExternal := false
 		if marker == "!" {
 			path = "pulls"
-			prefix = "http://localhost:3000/someUser/someRepo/pulls/"
+			prefix = "/someUser/someRepo/pulls/"
 		} else {
 			path = "issues"
 			prefix = "https://someurl.com/someUser/someRepo/"
@@ -116,7 +116,7 @@ func TestRender_IssueIndexPattern2(t *testing.T) {
 
 		links := make([]any, len(indices))
 		for i, index := range indices {
-			links[i] = numericIssueLink(util.URLJoin(TestRepoURL, path), "ref-issue", index, marker)
+			links[i] = numericIssueLink("/test-owner/test-repo/"+path, "ref-issue", index, marker)
 		}
 		expectedNil := fmt.Sprintf(expectedFmt, links...)
 		testRenderIssueIndexPattern(t, s, expectedNil, NewTestRenderContext(TestAppURL, localMetas))
@@ -210,7 +210,7 @@ func TestRender_IssueIndexPattern5(t *testing.T) {
 		metas["regexp"] = pattern
 		links := make([]any, len(ids))
 		for i, id := range ids {
-			links[i] = link(util.URLJoin("https://someurl.com/someUser/someRepo/", id), "ref-issue ref-external-issue", names[i])
+			links[i] = link("https://someurl.com/someUser/someRepo/"+id, "ref-issue ref-external-issue", names[i])
 		}
 
 		expected := fmt.Sprintf(expectedFmt, links...)
@@ -288,18 +288,18 @@ func TestRender_AutoLink(t *testing.T) {
 	}
 
 	// render valid issue URLs
-	test(util.URLJoin(TestRepoURL, "issues", "3333"),
-		numericIssueLink(util.URLJoin(TestRepoURL, "issues"), "ref-issue", 3333, "#"))
+	test(TestRepoURL+"issues/3333",
+		numericIssueLink(TestRepoURL+"issues", "ref-issue", 3333, "#"))
 
 	// render valid commit URLs
-	tmp := util.URLJoin(TestRepoURL, "commit", "d8a994ef243349f321568f9e36d5c3f444b99cae")
-	test(tmp, "<a href=\""+tmp+"\" class=\"commit\"><code class=\"nohighlight\">d8a994ef24</code></a>")
+	tmp := TestRepoURL + "commit/d8a994ef243349f321568f9e36d5c3f444b99cae"
+	test(tmp, "<a href=\""+tmp+"\" class=\"commit\"><code>d8a994ef24</code></a>")
 	tmp += "#diff-2"
-	test(tmp, "<a href=\""+tmp+"\" class=\"commit\"><code class=\"nohighlight\">d8a994ef24 (diff-2)</code></a>")
+	test(tmp, "<a href=\""+tmp+"\" class=\"commit\"><code>d8a994ef24 (diff-2)</code></a>")
 
 	// render other commit URLs
 	tmp = "https://external-link.gitea.io/go-gitea/gitea/commit/d8a994ef243349f321568f9e36d5c3f444b99cae#diff-2"
-	test(tmp, "<a href=\""+tmp+"\" class=\"commit\"><code class=\"nohighlight\">d8a994ef24 (diff-2)</code></a>")
+	test(tmp, "<a href=\""+tmp+"\">"+tmp+"</a>")
 }
 
 func TestRender_FullIssueURLs(t *testing.T) {
@@ -405,10 +405,10 @@ func TestRegExp_anySHA1Pattern(t *testing.T) {
 		if v.CommitID == "" {
 			assert.False(t, ok)
 		} else {
-			assert.EqualValues(t, strings.TrimSuffix(k, "."), ret.FullURL)
-			assert.EqualValues(t, v.CommitID, ret.CommitID)
-			assert.EqualValues(t, v.SubPath, ret.SubPath)
-			assert.EqualValues(t, v.QueryHash, ret.QueryHash)
+			assert.Equal(t, strings.TrimSuffix(k, "."), ret.FullURL)
+			assert.Equal(t, v.CommitID, ret.CommitID)
+			assert.Equal(t, v.SubPath, ret.SubPath)
+			assert.Equal(t, v.QueryHash, ret.QueryHash)
 		}
 	}
 }

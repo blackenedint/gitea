@@ -5,7 +5,7 @@ package test
 
 import (
 	"context"
-	"fmt"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -53,12 +53,12 @@ func (lc *LogChecker) checkLogEvent(event *log.EventFormatted) {
 	}
 }
 
-var checkerIndex int64
+var checkerIndex atomic.Int64
 
 func NewLogChecker(namePrefix string) (logChecker *LogChecker, cancel func()) {
 	logger := log.GetManager().GetLogger(namePrefix)
-	newCheckerIndex := atomic.AddInt64(&checkerIndex, 1)
-	writerName := namePrefix + "-" + fmt.Sprint(newCheckerIndex)
+	newCheckerIndex := checkerIndex.Add(1)
+	writerName := namePrefix + "-" + strconv.FormatInt(newCheckerIndex, 10)
 
 	lc := &LogChecker{}
 	lc.EventWriterBaseImpl = log.NewEventWriterBase(writerName, "test-log-checker", log.WriterMode{})

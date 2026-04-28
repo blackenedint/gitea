@@ -112,7 +112,7 @@ func getOwnerRepoCtx(ctx *context.Context) (*ownerRepoCtx, error) {
 func checkHookType(ctx *context.Context) string {
 	hookType := strings.ToLower(ctx.PathParam("type"))
 	if !util.SliceContainsString(setting.Webhook.Types, hookType, true) {
-		ctx.NotFound("checkHookType", nil)
+		ctx.NotFound(nil)
 		return ""
 	}
 	return hookType
@@ -184,6 +184,9 @@ func ParseHookEvent(form forms.WebhookForm) *webhook_module.HookEvent {
 			webhook_module.HookEventWiki:                     form.Wiki,
 			webhook_module.HookEventRepository:               form.Repository,
 			webhook_module.HookEventPackage:                  form.Package,
+			webhook_module.HookEventStatus:                   form.Status,
+			webhook_module.HookEventWorkflowRun:              form.WorkflowRun,
+			webhook_module.HookEventWorkflowJob:              form.WorkflowJob,
 		},
 		BranchFilter: form.BranchFilter,
 	}
@@ -195,7 +198,6 @@ type webhookParams struct {
 
 	URL         string
 	ContentType webhook.HookContentType
-	Secret      string
 	HTTPMethod  string
 	WebhookForm forms.WebhookForm
 	Meta        any
@@ -232,9 +234,10 @@ func createWebhook(ctx *context.Context, params webhookParams) {
 	w := &webhook.Webhook{
 		RepoID:          orCtx.RepoID,
 		URL:             params.URL,
+		Name:            strings.TrimSpace(params.WebhookForm.Name),
 		HTTPMethod:      params.HTTPMethod,
 		ContentType:     params.ContentType,
-		Secret:          params.Secret,
+		Secret:          params.WebhookForm.Secret,
 		HookEvent:       ParseHookEvent(params.WebhookForm),
 		IsActive:        params.WebhookForm.Active,
 		Type:            params.Type,
@@ -286,8 +289,9 @@ func editWebhook(ctx *context.Context, params webhookParams) {
 	}
 
 	w.URL = params.URL
+	w.Name = strings.TrimSpace(params.WebhookForm.Name)
 	w.ContentType = params.ContentType
-	w.Secret = params.Secret
+	w.Secret = params.WebhookForm.Secret
 	w.HookEvent = ParseHookEvent(params.WebhookForm)
 	w.IsActive = params.WebhookForm.Active
 	w.HTTPMethod = params.HTTPMethod
@@ -333,7 +337,6 @@ func giteaHookParams(ctx *context.Context) webhookParams {
 		Type:        webhook_module.GITEA,
 		URL:         form.PayloadURL,
 		ContentType: contentType,
-		Secret:      form.Secret,
 		HTTPMethod:  form.HTTPMethod,
 		WebhookForm: form.WebhookForm,
 	}
@@ -361,7 +364,6 @@ func gogsHookParams(ctx *context.Context) webhookParams {
 		Type:        webhook_module.GOGS,
 		URL:         form.PayloadURL,
 		ContentType: contentType,
-		Secret:      form.Secret,
 		WebhookForm: form.WebhookForm,
 	}
 }
@@ -448,12 +450,21 @@ func MatrixHooksEditPost(ctx *context.Context) {
 	editWebhook(ctx, matrixHookParams(ctx))
 }
 
+func matrixRoomIDEncode(roomID string) string {
+	// See https://spec.matrix.org/latest/appendices/#room-ids
+	// Some (unrelated) demo links: https://spec.matrix.org/latest/appendices/#matrixto-navigation
+	// API spec: https://spec.matrix.org/v1.18/client-server-api/#sending-events-to-a-room
+	// Some of their examples show links like: "PUT /rooms/!roomid:domain/state/m.example.event"
+	return strings.NewReplacer("%21", "!", "%3A", ":").Replace(url.PathEscape(roomID))
+}
+
 func matrixHookParams(ctx *context.Context) webhookParams {
 	form := web.GetForm(ctx).(*forms.NewMatrixHookForm)
 
+	// TODO: need to migrate to the latest (v3) API: https://spec.matrix.org/v1.18/client-server-api/
 	return webhookParams{
 		Type:        webhook_module.MATRIX,
-		URL:         fmt.Sprintf("%s/_matrix/client/r0/rooms/%s/send/m.room.message", form.HomeserverURL, url.PathEscape(form.RoomID)),
+		URL:         fmt.Sprintf("%s/_matrix/client/r0/rooms/%s/send/m.room.message", form.HomeserverURL, matrixRoomIDEncode(form.RoomID)),
 		ContentType: webhook.ContentTypeJSON,
 		HTTPMethod:  http.MethodPut,
 		WebhookForm: form.WebhookForm,
@@ -600,7 +611,7 @@ func checkWebhook(ctx *context.Context) (*ownerRepoCtx, *webhook.Webhook) {
 	}
 	if err != nil || w == nil {
 		if webhook.IsErrWebhookNotExist(err) {
-			ctx.NotFound("GetWebhookByID", nil)
+			ctx.NotFound(nil)
 		} else {
 			ctx.ServerError("GetWebhookByID", err)
 		}
@@ -717,7 +728,7 @@ func ReplayWebhook(ctx *context.Context) {
 
 	if err := webhook_service.ReplayHookTask(ctx, w, hookTaskUUID); err != nil {
 		if webhook.IsErrHookTaskNotExist(err) {
-			ctx.NotFound("ReplayHookTask", nil)
+			ctx.NotFound(nil)
 		} else {
 			ctx.ServerError("ReplayHookTask", err)
 		}

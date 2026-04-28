@@ -32,3 +32,24 @@ type swaggerResponseVariableList struct {
 	// in:body
 	Body []api.ActionVariable `json:"body"`
 }
+
+// ActionWorkflow
+// swagger:response ActionWorkflow
+type swaggerResponseActionWorkflow struct {
+	// in:body
+	Body api.ActionWorkflow `json:"body"`
+}
+
+// ActionWorkflowList
+// swagger:response ActionWorkflowList
+type swaggerResponseActionWorkflowList struct {
+	// in:body
+	Body api.ActionWorkflowResponse `json:"body"`
+}
+
+// RunDetails
+// swagger:response RunDetails
+type swaggerResponseRunDetails struct {
+	// in:body
+	Body api.RunDetails `json:"body"`
+}

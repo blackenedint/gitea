@@ -49,7 +49,7 @@ func (a *actionNotifier) NewIssue(ctx context.Context, issue *issues_model.Issue
 	}
 	repo := issue.Repo
 
-	if err := activities_model.NotifyWatchers(ctx, &activities_model.Action{
+	if err := NotifyWatchers(ctx, &activities_model.Action{
 		ActUserID: issue.Poster.ID,
 		ActUser:   issue.Poster,
 		OpType:    activities_model.ActionCreateIssue,
@@ -90,7 +90,7 @@ func (a *actionNotifier) IssueChangeStatus(ctx context.Context, doer *user_model
 	}
 
 	// Notify watchers for whatever action comes in, ignore if no action type.
-	if err := activities_model.NotifyWatchers(ctx, act); err != nil {
+	if err := NotifyWatchers(ctx, act); err != nil {
 		log.Error("NotifyWatchers: %v", err)
 	}
 }
@@ -126,7 +126,7 @@ func (a *actionNotifier) CreateIssueComment(ctx context.Context, doer *user_mode
 	}
 
 	// Notify watchers for whatever action comes in, ignore if no action type.
-	if err := activities_model.NotifyWatchers(ctx, act); err != nil {
+	if err := NotifyWatchers(ctx, act); err != nil {
 		log.Error("NotifyWatchers: %v", err)
 	}
 }
@@ -145,7 +145,7 @@ func (a *actionNotifier) NewPullRequest(ctx context.Context, pull *issues_model.
 		return
 	}
 
-	if err := activities_model.NotifyWatchers(ctx, &activities_model.Action{
+	if err := NotifyWatchers(ctx, &activities_model.Action{
 		ActUserID: pull.Issue.Poster.ID,
 		ActUser:   pull.Issue.Poster,
 		OpType:    activities_model.ActionCreatePullRequest,
@@ -159,7 +159,7 @@ func (a *actionNotifier) NewPullRequest(ctx context.Context, pull *issues_model.
 }
 
 func (a *actionNotifier) RenameRepository(ctx context.Context, doer *user_model.User, repo *repo_model.Repository, oldRepoName string) {
-	if err := activities_model.NotifyWatchers(ctx, &activities_model.Action{
+	if err := NotifyWatchers(ctx, &activities_model.Action{
 		ActUserID: doer.ID,
 		ActUser:   doer,
 		OpType:    activities_model.ActionRenameRepo,
@@ -173,7 +173,7 @@ func (a *actionNotifier) RenameRepository(ctx context.Context, doer *user_model.
 }
 
 func (a *actionNotifier) TransferRepository(ctx context.Context, doer *user_model.User, repo *repo_model.Repository, oldOwnerName string) {
-	if err := activities_model.NotifyWatchers(ctx, &activities_model.Action{
+	if err := NotifyWatchers(ctx, &activities_model.Action{
 		ActUserID: doer.ID,
 		ActUser:   doer,
 		OpType:    activities_model.ActionTransferRepo,
@@ -187,7 +187,7 @@ func (a *actionNotifier) TransferRepository(ctx context.Context, doer *user_mode
 }
 
 func (a *actionNotifier) CreateRepository(ctx context.Context, doer, u *user_model.User, repo *repo_model.Repository) {
-	if err := activities_model.NotifyWatchers(ctx, &activities_model.Action{
+	if err := NotifyWatchers(ctx, &activities_model.Action{
 		ActUserID: doer.ID,
 		ActUser:   doer,
 		OpType:    activities_model.ActionCreateRepo,
@@ -200,7 +200,7 @@ func (a *actionNotifier) CreateRepository(ctx context.Context, doer, u *user_mod
 }
 
 func (a *actionNotifier) ForkRepository(ctx context.Context, doer *user_model.User, oldRepo, repo *repo_model.Repository) {
-	if err := activities_model.NotifyWatchers(ctx, &activities_model.Action{
+	if err := NotifyWatchers(ctx, &activities_model.Action{
 		ActUserID: doer.ID,
 		ActUser:   doer,
 		OpType:    activities_model.ActionCreateRepo,
@@ -265,13 +265,13 @@ func (a *actionNotifier) PullRequestReview(ctx context.Context, pr *issues_model
 		actions = append(actions, action)
 	}
 
-	if err := activities_model.NotifyWatchersActions(ctx, actions); err != nil {
+	if err := NotifyWatchers(ctx, actions...); err != nil {
 		log.Error("notify watchers '%d/%d': %v", review.Reviewer.ID, review.Issue.RepoID, err)
 	}
 }
 
 func (*actionNotifier) MergePullRequest(ctx context.Context, doer *user_model.User, pr *issues_model.PullRequest) {
-	if err := activities_model.NotifyWatchers(ctx, &activities_model.Action{
+	if err := NotifyWatchers(ctx, &activities_model.Action{
 		ActUserID: doer.ID,
 		ActUser:   doer,
 		OpType:    activities_model.ActionMergePullRequest,
@@ -285,7 +285,7 @@ func (*actionNotifier) MergePullRequest(ctx context.Context, doer *user_model.Us
 }
 
 func (*actionNotifier) AutoMergePullRequest(ctx context.Context, doer *user_model.User, pr *issues_model.PullRequest) {
-	if err := activities_model.NotifyWatchers(ctx, &activities_model.Action{
+	if err := NotifyWatchers(ctx, &activities_model.Action{
 		ActUserID: doer.ID,
 		ActUser:   doer,
 		OpType:    activities_model.ActionAutoMergePullRequest,
@@ -303,7 +303,7 @@ func (*actionNotifier) NotifyPullRevieweDismiss(ctx context.Context, doer *user_
 	if len(review.OriginalAuthor) > 0 {
 		reviewerName = review.OriginalAuthor
 	}
-	if err := activities_model.NotifyWatchers(ctx, &activities_model.Action{
+	if err := NotifyWatchers(ctx, &activities_model.Action{
 		ActUserID: doer.ID,
 		ActUser:   doer,
 		OpType:    activities_model.ActionPullReviewDismissed,
@@ -327,7 +327,7 @@ func (a *actionNotifier) PushCommits(ctx context.Context, pusher *user_model.Use
 
 	opType := activities_model.ActionCommitRepo
 
-	// Check it's tag push or branch.
+	// Check its tag push or branch.
 	if opts.RefFullName.IsTag() {
 		opType = activities_model.ActionPushTag
 		if opts.IsDelRef() {
@@ -337,7 +337,12 @@ func (a *actionNotifier) PushCommits(ctx context.Context, pusher *user_model.Use
 		opType = activities_model.ActionDeleteBranch
 	}
 
-	if err = activities_model.NotifyWatchers(ctx, &activities_model.Action{
+	// HINT: USER-ACTIVITY-PUSH-COMMITS: it's said that the time of push commits (for user activity display) is designed this way,
+	// it doesn't use git commit's time, it only uses the doer's action time.
+	// ref: https://github.com/go-gitea/gitea/pull/36469#issuecomment-3901955347
+	// ref: https://github.com/go-gitea/gitea/issues/14051
+	// ref: https://github.com/go-gitea/gitea/issues/11861#issuecomment-643162143
+	if err = NotifyWatchers(ctx, &activities_model.Action{
 		ActUserID: pusher.ID,
 		ActUser:   pusher,
 		OpType:    opType,
@@ -357,7 +362,7 @@ func (a *actionNotifier) CreateRef(ctx context.Context, doer *user_model.User, r
 		// has sent same action in `PushCommits`, so skip it.
 		return
 	}
-	if err := activities_model.NotifyWatchers(ctx, &activities_model.Action{
+	if err := NotifyWatchers(ctx, &activities_model.Action{
 		ActUserID: doer.ID,
 		ActUser:   doer,
 		OpType:    opType,
@@ -376,7 +381,7 @@ func (a *actionNotifier) DeleteRef(ctx context.Context, doer *user_model.User, r
 		// has sent same action in `PushCommits`, so skip it.
 		return
 	}
-	if err := activities_model.NotifyWatchers(ctx, &activities_model.Action{
+	if err := NotifyWatchers(ctx, &activities_model.Action{
 		ActUserID: doer.ID,
 		ActUser:   doer,
 		OpType:    opType,
@@ -402,7 +407,7 @@ func (a *actionNotifier) SyncPushCommits(ctx context.Context, pusher *user_model
 		return
 	}
 
-	if err := activities_model.NotifyWatchers(ctx, &activities_model.Action{
+	if err := NotifyWatchers(ctx, &activities_model.Action{
 		ActUserID: repo.OwnerID,
 		ActUser:   repo.MustOwner(ctx),
 		OpType:    activities_model.ActionMirrorSyncPush,
@@ -423,7 +428,7 @@ func (a *actionNotifier) SyncCreateRef(ctx context.Context, doer *user_model.Use
 		return
 	}
 
-	if err := activities_model.NotifyWatchers(ctx, &activities_model.Action{
+	if err := NotifyWatchers(ctx, &activities_model.Action{
 		ActUserID: repo.OwnerID,
 		ActUser:   repo.MustOwner(ctx),
 		OpType:    activities_model.ActionMirrorSyncCreate,
@@ -443,7 +448,7 @@ func (a *actionNotifier) SyncDeleteRef(ctx context.Context, doer *user_model.Use
 		return
 	}
 
-	if err := activities_model.NotifyWatchers(ctx, &activities_model.Action{
+	if err := NotifyWatchers(ctx, &activities_model.Action{
 		ActUserID: repo.OwnerID,
 		ActUser:   repo.MustOwner(ctx),
 		OpType:    activities_model.ActionMirrorSyncDelete,
@@ -461,7 +466,7 @@ func (a *actionNotifier) NewRelease(ctx context.Context, rel *repo_model.Release
 		log.Error("LoadAttributes: %v", err)
 		return
 	}
-	if err := activities_model.NotifyWatchers(ctx, &activities_model.Action{
+	if err := NotifyWatchers(ctx, &activities_model.Action{
 		ActUserID: rel.PublisherID,
 		ActUser:   rel.Publisher,
 		OpType:    activities_model.ActionPublishRelease,

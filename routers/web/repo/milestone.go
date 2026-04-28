@@ -38,10 +38,7 @@ func Milestones(ctx *context.Context) {
 	isShowClosed := ctx.FormString("state") == "closed"
 	sortType := ctx.FormString("sort")
 	keyword := ctx.FormTrim("q")
-	page := ctx.FormInt("page")
-	if page <= 1 {
-		page = 1
-	}
+	page := max(ctx.FormInt("page"), 1)
 
 	miles, total, err := db.FindAndCount[issues_model.Milestone](ctx, issues_model.FindMilestoneOptions{
 		ListOptions: db.ListOptions{
@@ -91,7 +88,7 @@ func Milestones(ctx *context.Context) {
 	ctx.Data["Keyword"] = keyword
 	ctx.Data["IsShowClosed"] = isShowClosed
 
-	pager := context.NewPagination(int(total), setting.UI.IssuePagingNum, page, 5)
+	pager := context.NewPagination(total, setting.UI.IssuePagingNum, page, 5)
 	pager.AddParamFromRequest(ctx.Req)
 	ctx.Data["Page"] = pager
 
@@ -121,7 +118,7 @@ func NewMilestonePost(ctx *context.Context) {
 	deadlineUnix, err := common.ParseDeadlineDateToEndOfDay(form.Deadline)
 	if err != nil {
 		ctx.Data["Err_Deadline"] = true
-		ctx.RenderWithErr(ctx.Tr("repo.milestones.invalid_due_date_format"), tplMilestoneNew, &form)
+		ctx.RenderWithErrDeprecated(ctx.Tr("repo.milestones.invalid_due_date_format"), tplMilestoneNew, &form)
 		return
 	}
 
@@ -148,7 +145,7 @@ func EditMilestone(ctx *context.Context) {
 	m, err := issues_model.GetMilestoneByRepoID(ctx, ctx.Repo.Repository.ID, ctx.PathParamInt64("id"))
 	if err != nil {
 		if issues_model.IsErrMilestoneNotExist(err) {
-			ctx.NotFound("", nil)
+			ctx.NotFound(nil)
 		} else {
 			ctx.ServerError("GetMilestoneByRepoID", err)
 		}
@@ -177,14 +174,14 @@ func EditMilestonePost(ctx *context.Context) {
 	deadlineUnix, err := common.ParseDeadlineDateToEndOfDay(form.Deadline)
 	if err != nil {
 		ctx.Data["Err_Deadline"] = true
-		ctx.RenderWithErr(ctx.Tr("repo.milestones.invalid_due_date_format"), tplMilestoneNew, &form)
+		ctx.RenderWithErrDeprecated(ctx.Tr("repo.milestones.invalid_due_date_format"), tplMilestoneNew, &form)
 		return
 	}
 
 	m, err := issues_model.GetMilestoneByRepoID(ctx, ctx.Repo.Repository.ID, ctx.PathParamInt64("id"))
 	if err != nil {
 		if issues_model.IsErrMilestoneNotExist(err) {
-			ctx.NotFound("", nil)
+			ctx.NotFound(nil)
 		} else {
 			ctx.ServerError("GetMilestoneByRepoID", err)
 		}
@@ -218,7 +215,7 @@ func ChangeMilestoneStatus(ctx *context.Context) {
 
 	if err := issues_model.ChangeMilestoneStatusByRepoIDAndID(ctx, ctx.Repo.Repository.ID, id, toClose); err != nil {
 		if issues_model.IsErrMilestoneNotExist(err) {
-			ctx.NotFound("", err)
+			ctx.NotFound(err)
 		} else {
 			ctx.ServerError("ChangeMilestoneStatusByIDAndRepoID", err)
 		}
@@ -245,7 +242,7 @@ func MilestoneIssuesAndPulls(ctx *context.Context) {
 	milestone, err := issues_model.GetMilestoneByRepoID(ctx, ctx.Repo.Repository.ID, milestoneID)
 	if err != nil {
 		if issues_model.IsErrMilestoneNotExist(err) {
-			ctx.NotFound("GetMilestoneByID", err)
+			ctx.NotFound(err)
 			return
 		}
 
@@ -263,13 +260,13 @@ func MilestoneIssuesAndPulls(ctx *context.Context) {
 	ctx.Data["Title"] = milestone.Name
 	ctx.Data["Milestone"] = milestone
 
-	issues(ctx, milestoneID, projectID, optional.None[bool]())
+	prepareIssueFilterAndList(ctx, milestoneID, projectID, optional.None[bool]())
 
 	ret := issue.ParseTemplatesFromDefaultBranch(ctx.Repo.Repository, ctx.Repo.GitRepo)
 	ctx.Data["NewIssueChooseTemplate"] = len(ret.IssueTemplates) > 0
 
-	ctx.Data["CanWriteIssues"] = ctx.Repo.CanWriteIssuesOrPulls(false)
-	ctx.Data["CanWritePulls"] = ctx.Repo.CanWriteIssuesOrPulls(true)
+	ctx.Data["CanWriteIssues"] = ctx.Repo.Permission.CanWriteIssuesOrPulls(false)
+	ctx.Data["CanWritePulls"] = ctx.Repo.Permission.CanWriteIssuesOrPulls(true)
 
 	ctx.HTML(http.StatusOK, tplMilestoneIssues)
 }

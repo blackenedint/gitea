@@ -4,6 +4,7 @@
 package repo
 
 import (
+	"fmt"
 	"net/http"
 	"net/url"
 
@@ -33,7 +34,7 @@ func GetGitAllRefs(ctx *context.APIContext) {
 	//   required: true
 	// responses:
 	//   "200":
-	// #   "$ref": "#/responses/Reference" TODO: swagger doesnt support different output formats by ref
+	// #   "$ref": "#/responses/Reference" TODO: swagger doesn't support different output formats by ref
 	//     "$ref": "#/responses/ReferenceList"
 	//   "404":
 	//     "$ref": "#/responses/notFound"
@@ -66,7 +67,7 @@ func GetGitRefs(ctx *context.APIContext) {
 	//   required: true
 	// responses:
 	//   "200":
-	// #   "$ref": "#/responses/Reference" TODO: swagger doesnt support different output formats by ref
+	// #   "$ref": "#/responses/Reference" TODO: swagger doesn't support different output formats by ref
 	//     "$ref": "#/responses/ReferenceList"
 	//   "404":
 	//     "$ref": "#/responses/notFound"
@@ -77,12 +78,12 @@ func GetGitRefs(ctx *context.APIContext) {
 func getGitRefsInternal(ctx *context.APIContext, filter string) {
 	refs, lastMethodName, err := utils.GetGitRefs(ctx, filter)
 	if err != nil {
-		ctx.Error(http.StatusInternalServerError, lastMethodName, err)
+		ctx.APIErrorInternal(fmt.Errorf("%s: %w", lastMethodName, err))
 		return
 	}
 
 	if len(refs) == 0 {
-		ctx.NotFound()
+		ctx.APIErrorNotFound()
 		return
 	}
 

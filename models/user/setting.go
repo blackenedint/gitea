@@ -5,15 +5,18 @@ package user
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 
 	"code.gitea.io/gitea/models/db"
 	"code.gitea.io/gitea/modules/cache"
+	"code.gitea.io/gitea/modules/json"
 	setting_module "code.gitea.io/gitea/modules/setting"
 	"code.gitea.io/gitea/modules/util"
 
 	"xorm.io/builder"
+	"xorm.io/xorm/convert"
 )
 
 // Setting is a key value store of user settings
@@ -45,12 +48,6 @@ func (err ErrUserSettingIsNotExist) Error() string {
 
 func (err ErrUserSettingIsNotExist) Unwrap() error {
 	return util.ErrNotExist
-}
-
-// IsErrUserSettingIsNotExist return true if err is ErrSettingIsNotExist
-func IsErrUserSettingIsNotExist(err error) bool {
-	_, ok := err.(ErrUserSettingIsNotExist)
-	return ok
 }
 
 // genSettingCacheKey returns the cache key for some configuration
@@ -114,10 +111,10 @@ func GetUserAllSettings(ctx context.Context, uid int64) (map[string]*Setting, er
 
 func validateUserSettingKey(key string) error {
 	if len(key) == 0 {
-		return fmt.Errorf("setting key must be set")
+		return errors.New("setting key must be set")
 	}
 	if strings.ToLower(key) != key {
-		return fmt.Errorf("setting key should be lowercase")
+		return errors.New("setting key should be lowercase")
 	}
 	return nil
 }
@@ -209,4 +206,45 @@ func upsertUserSettingValue(ctx context.Context, userID int64, key, value string
 		_, err = e.Insert(&Setting{UserID: userID, SettingKey: key, SettingValue: value})
 		return err
 	})
+}
+
+func GetUserSettingJSON[T any](ctx context.Context, userID int64, key string, def T) (ret T, _ error) {
+	ret = def
+	str, err := GetUserSetting(ctx, userID, key)
+	if err != nil {
+		return ret, err
+	}
+
+	conv, ok := any(&ret).(convert.ConversionFrom)
+	if !ok {
+		conv, ok = any(ret).(convert.ConversionFrom)
+	}
+	if ok {
+		if err := conv.FromDB(util.UnsafeStringToBytes(str)); err != nil {
+			return ret, err
+		}
+	} else {
+		if str == "" {
+			return ret, nil
+		}
+		err = json.Unmarshal(util.UnsafeStringToBytes(str), &ret)
+	}
+	return ret, err
+}
+
+func SetUserSettingJSON[T any](ctx context.Context, userID int64, key string, val T) (err error) {
+	conv, ok := any(&val).(convert.ConversionTo)
+	if !ok {
+		conv, ok = any(val).(convert.ConversionTo)
+	}
+	var bs []byte
+	if ok {
+		bs, err = conv.ToDB()
+	} else {
+		bs, err = json.Marshal(val)
+	}
+	if err != nil {
+		return err
+	}
+	return SetUserSetting(ctx, userID, key, util.UnsafeBytesToString(bs))
 }

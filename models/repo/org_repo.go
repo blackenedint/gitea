@@ -18,7 +18,14 @@ import (
 // GetOrgRepositories get repos belonging to the given organization
 func GetOrgRepositories(ctx context.Context, orgID int64) (RepositoryList, error) {
 	var orgRepos []*Repository
-	return orgRepos, db.GetEngine(ctx).Where("owner_id = ?", orgID).Find(&orgRepos)
+	err := db.GetEngine(ctx).Where("owner_id = ?", orgID).Find(&orgRepos)
+	return orgRepos, err
+}
+
+// GetOrgRepositoryIDs get repo IDs belonging to the given organization
+func GetOrgRepositoryIDs(ctx context.Context, orgID int64) (repoIDs []int64, _ error) {
+	err := db.GetEngine(ctx).Table("repository").Where("owner_id = ?", orgID).Cols("id").Find(&repoIDs)
+	return repoIDs, err
 }
 
 type SearchTeamRepoOptions struct {
@@ -26,7 +33,7 @@ type SearchTeamRepoOptions struct {
 	TeamID int64
 }
 
-// GetRepositories returns paginated repositories in team of organization.
+// GetTeamRepositories returns paginated repositories in team of organization.
 func GetTeamRepositories(ctx context.Context, opts *SearchTeamRepoOptions) (RepositoryList, error) {
 	sess := db.GetEngine(ctx)
 	if opts.TeamID > 0 {
@@ -47,10 +54,9 @@ func GetTeamRepositories(ctx context.Context, opts *SearchTeamRepoOptions) (Repo
 // AccessibleReposEnvironment operations involving the repositories that are
 // accessible to a particular user
 type AccessibleReposEnvironment interface {
-	CountRepos() (int64, error)
-	RepoIDs(page, pageSize int) ([]int64, error)
-	Repos(page, pageSize int) (RepositoryList, error)
-	MirrorRepos() (RepositoryList, error)
+	CountRepos(ctx context.Context) (int64, error)
+	RepoIDs(ctx context.Context) ([]int64, error)
+	MirrorRepos(ctx context.Context) (RepositoryList, error)
 	AddKeyword(keyword string)
 	SetSort(db.SearchOrderBy)
 }
@@ -60,7 +66,6 @@ type accessibleReposEnv struct {
 	user    *user_model.User
 	team    *org_model.Team
 	teamIDs []int64
-	ctx     context.Context
 	keyword string
 	orderBy db.SearchOrderBy
 }
@@ -86,18 +91,16 @@ func AccessibleReposEnv(ctx context.Context, org *org_model.Organization, userID
 		org:     org,
 		user:    user,
 		teamIDs: teamIDs,
-		ctx:     ctx,
 		orderBy: db.SearchOrderByRecentUpdated,
 	}, nil
 }
 
 // AccessibleTeamReposEnv an AccessibleReposEnvironment for the repositories in `org`
 // that are accessible to the specified team.
-func AccessibleTeamReposEnv(ctx context.Context, org *org_model.Organization, team *org_model.Team) AccessibleReposEnvironment {
+func AccessibleTeamReposEnv(org *org_model.Organization, team *org_model.Team) AccessibleReposEnvironment {
 	return &accessibleReposEnv{
 		org:     org,
 		team:    team,
-		ctx:     ctx,
 		orderBy: db.SearchOrderByRecentUpdated,
 	}
 }
@@ -123,8 +126,8 @@ func (env *accessibleReposEnv) cond() builder.Cond {
 	return cond
 }
 
-func (env *accessibleReposEnv) CountRepos() (int64, error) {
-	repoCount, err := db.GetEngine(env.ctx).
+func (env *accessibleReposEnv) CountRepos(ctx context.Context) (int64, error) {
+	repoCount, err := db.GetEngine(ctx).
 		Join("INNER", "team_repo", "`team_repo`.repo_id=`repository`.id").
 		Where(env.cond()).
 		Distinct("`repository`.id").
@@ -135,43 +138,21 @@ func (env *accessibleReposEnv) CountRepos() (int64, error) {
 	return repoCount, nil
 }
 
-func (env *accessibleReposEnv) RepoIDs(page, pageSize int) ([]int64, error) {
-	if page <= 0 {
-		page = 1
-	}
-
-	repoIDs := make([]int64, 0, pageSize)
-	return repoIDs, db.GetEngine(env.ctx).
+func (env *accessibleReposEnv) RepoIDs(ctx context.Context) ([]int64, error) {
+	var repoIDs []int64
+	return repoIDs, db.GetEngine(ctx).
 		Table("repository").
 		Join("INNER", "team_repo", "`team_repo`.repo_id=`repository`.id").
 		Where(env.cond()).
-		GroupBy("`repository`.id,`repository`."+strings.Fields(string(env.orderBy))[0]).
+		GroupBy("`repository`.id,`repository`." + strings.Fields(string(env.orderBy))[0]).
 		OrderBy(string(env.orderBy)).
-		Limit(pageSize, (page-1)*pageSize).
 		Cols("`repository`.id").
 		Find(&repoIDs)
 }
 
-func (env *accessibleReposEnv) Repos(page, pageSize int) (RepositoryList, error) {
-	repoIDs, err := env.RepoIDs(page, pageSize)
-	if err != nil {
-		return nil, fmt.Errorf("GetUserRepositoryIDs: %w", err)
-	}
-
-	repos := make([]*Repository, 0, len(repoIDs))
-	if len(repoIDs) == 0 {
-		return repos, nil
-	}
-
-	return repos, db.GetEngine(env.ctx).
-		In("`repository`.id", repoIDs).
-		OrderBy(string(env.orderBy)).
-		Find(&repos)
-}
-
-func (env *accessibleReposEnv) MirrorRepoIDs() ([]int64, error) {
+func (env *accessibleReposEnv) MirrorRepoIDs(ctx context.Context) ([]int64, error) {
 	repoIDs := make([]int64, 0, 10)
-	return repoIDs, db.GetEngine(env.ctx).
+	return repoIDs, db.GetEngine(ctx).
 		Table("repository").
 		Join("INNER", "team_repo", "`team_repo`.repo_id=`repository`.id AND `repository`.is_mirror=?", true).
 		Where(env.cond()).
@@ -181,8 +162,8 @@ func (env *accessibleReposEnv) MirrorRepoIDs() ([]int64, error) {
 		Find(&repoIDs)
 }
 
-func (env *accessibleReposEnv) MirrorRepos() (RepositoryList, error) {
-	repoIDs, err := env.MirrorRepoIDs()
+func (env *accessibleReposEnv) MirrorRepos(ctx context.Context) (RepositoryList, error) {
+	repoIDs, err := env.MirrorRepoIDs(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("MirrorRepoIDs: %w", err)
 	}
@@ -192,7 +173,7 @@ func (env *accessibleReposEnv) MirrorRepos() (RepositoryList, error) {
 		return repos, nil
 	}
 
-	return repos, db.GetEngine(env.ctx).
+	return repos, db.GetEngine(ctx).
 		In("`repository`.id", repoIDs).
 		Find(&repos)
 }

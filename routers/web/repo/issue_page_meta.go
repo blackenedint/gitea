@@ -33,10 +33,18 @@ type issueSidebarAssigneesData struct {
 	CandidateAssignees  []*user_model.User
 }
 
+type issueSidebarProjectCardData struct {
+	Project        *project_model.Project
+	Columns        []*project_model.Column
+	SelectedColumn *project_model.Column
+}
+
 type issueSidebarProjectsData struct {
-	SelectedProjectID int64
-	OpenProjects      []*project_model.Project
-	ClosedProjects    []*project_model.Project
+	SelectedProjectIDs []int64 // TODO: support multiple projects in the future
+	ProjectCards       []*issueSidebarProjectCardData
+
+	OpenProjects   []*project_model.Project
+	ClosedProjects []*project_model.Project
 }
 
 type IssuePageMetaData struct {
@@ -79,13 +87,31 @@ func retrieveRepoIssueMetaData(ctx *context.Context, repo *repo_model.Repository
 		return data
 	}
 
-	data.CanModifyIssueOrPull = ctx.Repo.CanWriteIssuesOrPulls(isPull) && !ctx.Repo.Repository.IsArchived
-	if !data.CanModifyIssueOrPull {
+	// it sets "Branches" template data,
+	// it is used to render the "edit PR target branches" dropdown, and the "branch selector" in the issue's sidebar.
+	PrepareBranchList(ctx)
+	if ctx.Written() {
 		return data
 	}
 
-	data.retrieveAssigneesDataForIssueWriter(ctx)
+	// it sets the "Assignees" template data, and the data is also used to "mention" users.
+	data.retrieveAssigneesData(ctx)
 	if ctx.Written() {
+		return data
+	}
+
+	data.retrieveProjectData(ctx)
+	if ctx.Written() {
+		return data
+	}
+
+	// TODO: the issue/pull permissions are quite complex and unclear
+	// A reader could create an issue/PR with setting some meta (eg: assignees from issue template, reviewers, target branch)
+	// A reader(creator) could update some meta (eg: target branch), but can't change assignees anymore.
+	// For non-creator users, only writers could update some meta (eg: assignees, milestone, project)
+	// Need to clarify the logic and add some tests in the future
+	data.CanModifyIssueOrPull = ctx.Repo.Permission.CanWriteIssuesOrPulls(isPull) && !ctx.Repo.Repository.IsArchived
+	if !data.CanModifyIssueOrPull {
 		return data
 	}
 
@@ -95,11 +121,6 @@ func retrieveRepoIssueMetaData(ctx *context.Context, repo *repo_model.Repository
 	}
 
 	data.retrieveProjectsDataForIssueWriter(ctx)
-	if ctx.Written() {
-		return data
-	}
-
-	PrepareBranchList(ctx)
 	if ctx.Written() {
 		return data
 	}
@@ -131,7 +152,7 @@ func (d *IssuePageMetaData) retrieveMilestonesDataForIssueWriter(ctx *context.Co
 	}
 }
 
-func (d *IssuePageMetaData) retrieveAssigneesDataForIssueWriter(ctx *context.Context) {
+func (d *IssuePageMetaData) retrieveAssigneesData(ctx *context.Context) {
 	var err error
 	d.AssigneesData.CandidateAssignees, err = repo_model.GetRepoAssignees(ctx, d.Repository)
 	if err != nil {
@@ -147,14 +168,44 @@ func (d *IssuePageMetaData) retrieveAssigneesDataForIssueWriter(ctx *context.Con
 		}
 		d.AssigneesData.SelectedAssigneeIDs = strings.Join(ids, ",")
 	}
-	// FIXME: this is a tricky part which writes ctx.Data["Mentionable*"]
-	handleMentionableAssigneesAndTeams(ctx, d.AssigneesData.CandidateAssignees)
+	ctx.Data["Assignees"] = d.AssigneesData.CandidateAssignees
+}
+
+func (d *IssuePageMetaData) retrieveProjectData(ctx *context.Context) {
+	if d.Issue == nil || d.Issue.Project == nil {
+		return
+	}
+	columns, err := d.Issue.Project.GetColumns(ctx)
+	if err != nil {
+		ctx.ServerError("GetProjectColumns", err)
+		return
+	}
+	columnID, err := d.Issue.ProjectColumnID(ctx)
+	if err != nil {
+		ctx.ServerError("ProjectColumnID", err)
+		return
+	}
+	var selectedColumn *project_model.Column
+	for _, col := range columns {
+		if col.ID == columnID {
+			selectedColumn = col
+			break
+		}
+	}
+	d.ProjectsData.ProjectCards = []*issueSidebarProjectCardData{
+		{
+			Project:        d.Issue.Project,
+			Columns:        columns,
+			SelectedColumn: selectedColumn,
+		},
+	}
+	d.ProjectsData.SelectedProjectIDs = make([]int64, 0, len(d.ProjectsData.ProjectCards))
+	for _, card := range d.ProjectsData.ProjectCards {
+		d.ProjectsData.SelectedProjectIDs = append(d.ProjectsData.SelectedProjectIDs, card.Project.ID)
+	}
 }
 
 func (d *IssuePageMetaData) retrieveProjectsDataForIssueWriter(ctx *context.Context) {
-	if d.Issue != nil && d.Issue.Project != nil {
-		d.ProjectsData.SelectedProjectID = d.Issue.Project.ID
-	}
 	d.ProjectsData.OpenProjects, d.ProjectsData.ClosedProjects = retrieveProjectsInternal(ctx, ctx.Repo.Repository)
 }
 

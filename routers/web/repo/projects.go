@@ -39,14 +39,14 @@ const (
 // MustEnableRepoProjects check if repo projects are enabled in settings
 func MustEnableRepoProjects(ctx *context.Context) {
 	if unit.TypeProjects.UnitGlobalDisabled() {
-		ctx.NotFound("EnableRepoProjects", nil)
+		ctx.NotFound(nil)
 		return
 	}
 
 	if ctx.Repo.Repository != nil {
 		projectsUnit := ctx.Repo.Repository.MustGetUnit(ctx, unit.TypeProjects)
-		if !ctx.Repo.CanRead(unit.TypeProjects) || !projectsUnit.ProjectsConfig().IsProjectsAllowed(repo_model.ProjectsModeRepo) {
-			ctx.NotFound("MustEnableRepoProjects", nil)
+		if !ctx.Repo.Permission.CanRead(unit.TypeProjects) || !projectsUnit.ProjectsConfig().IsProjectsAllowed(repo_model.ProjectsModeRepo) {
+			ctx.NotFound(nil)
 			return
 		}
 	}
@@ -61,20 +61,10 @@ func Projects(ctx *context.Context) {
 	isShowClosed := strings.ToLower(ctx.FormTrim("state")) == "closed"
 	keyword := ctx.FormTrim("q")
 	repo := ctx.Repo.Repository
-	page := ctx.FormInt("page")
-	if page <= 1 {
-		page = 1
-	}
+	page := max(ctx.FormInt("page"), 1)
 
 	ctx.Data["OpenCount"] = repo.NumOpenProjects
 	ctx.Data["ClosedCount"] = repo.NumClosedProjects
-
-	var total int
-	if !isShowClosed {
-		total = repo.NumOpenProjects
-	} else {
-		total = repo.NumClosedProjects
-	}
 
 	projects, count, err := db.FindAndCount[project_model.Project](ctx, project_model.SearchOptions{
 		ListOptions: db.ListOptions{
@@ -89,6 +79,11 @@ func Projects(ctx *context.Context) {
 	})
 	if err != nil {
 		ctx.ServerError("GetProjects", err)
+		return
+	}
+
+	if err := project_service.LoadIssueNumbersForProjects(ctx, projects, ctx.Doer); err != nil {
+		ctx.ServerError("LoadIssueNumbersForProjects", err)
 		return
 	}
 
@@ -109,12 +104,7 @@ func Projects(ctx *context.Context) {
 		ctx.Data["State"] = "open"
 	}
 
-	numPages := 0
-	if count > 0 {
-		numPages = (int(count) - 1/setting.UI.IssuePagingNum)
-	}
-
-	pager := context.NewPagination(total, setting.UI.IssuePagingNum, page, numPages)
+	pager := context.NewPagination(count, setting.UI.IssuePagingNum, page, 5)
 	pager.AddParamFromRequest(ctx.Req)
 	ctx.Data["Page"] = pager
 
@@ -189,14 +179,14 @@ func DeleteProject(ctx *context.Context) {
 	p, err := project_model.GetProjectByID(ctx, ctx.PathParamInt64("id"))
 	if err != nil {
 		if project_model.IsErrProjectNotExist(err) {
-			ctx.NotFound("", nil)
+			ctx.NotFound(nil)
 		} else {
 			ctx.ServerError("GetProjectByID", err)
 		}
 		return
 	}
 	if p.RepoID != ctx.Repo.Repository.ID {
-		ctx.NotFound("", nil)
+		ctx.NotFound(nil)
 		return
 	}
 
@@ -219,14 +209,14 @@ func RenderEditProject(ctx *context.Context) {
 	p, err := project_model.GetProjectByID(ctx, ctx.PathParamInt64("id"))
 	if err != nil {
 		if project_model.IsErrProjectNotExist(err) {
-			ctx.NotFound("", nil)
+			ctx.NotFound(nil)
 		} else {
 			ctx.ServerError("GetProjectByID", err)
 		}
 		return
 	}
 	if p.RepoID != ctx.Repo.Repository.ID {
-		ctx.NotFound("", nil)
+		ctx.NotFound(nil)
 		return
 	}
 
@@ -259,14 +249,14 @@ func EditProjectPost(ctx *context.Context) {
 	p, err := project_model.GetProjectByID(ctx, projectID)
 	if err != nil {
 		if project_model.IsErrProjectNotExist(err) {
-			ctx.NotFound("", nil)
+			ctx.NotFound(nil)
 		} else {
 			ctx.ServerError("GetProjectByID", err)
 		}
 		return
 	}
 	if p.RepoID != ctx.Repo.Repository.ID {
-		ctx.NotFound("", nil)
+		ctx.NotFound(nil)
 		return
 	}
 
@@ -291,14 +281,14 @@ func ViewProject(ctx *context.Context) {
 	project, err := project_model.GetProjectByID(ctx, ctx.PathParamInt64("id"))
 	if err != nil {
 		if project_model.IsErrProjectNotExist(err) {
-			ctx.NotFound("", nil)
+			ctx.NotFound(nil)
 		} else {
 			ctx.ServerError("GetProjectByID", err)
 		}
 		return
 	}
 	if project.RepoID != ctx.Repo.Repository.ID {
-		ctx.NotFound("", nil)
+		ctx.NotFound(nil)
 		return
 	}
 
@@ -308,17 +298,33 @@ func ViewProject(ctx *context.Context) {
 		return
 	}
 
-	labelIDs := issue.PrepareFilterIssueLabels(ctx, ctx.Repo.Repository.ID, ctx.Repo.Owner)
+	preparedLabelFilter := issue.PrepareFilterIssueLabels(ctx, ctx.Repo.Repository.ID, ctx.Repo.Owner)
+	if ctx.Written() {
+		return
+	}
 
-	assigneeID := ctx.FormInt64("assignee") // TODO: use "optional" but not 0 in the future
+	assigneeID := ctx.FormString("assignee")
+	milestoneID := ctx.FormInt64("milestone")
 
-	issuesMap, err := issues_model.LoadIssuesFromColumnList(ctx, columns, &issues_model.IssuesOptions{
-		LabelIDs:   labelIDs,
-		AssigneeID: optional.Some(assigneeID),
+	var milestoneIDs []int64
+	if milestoneID > 0 {
+		milestoneIDs = []int64{milestoneID}
+	} else if milestoneID == db.NoConditionID {
+		milestoneIDs = []int64{db.NoConditionID}
+	}
+
+	issuesMap, err := project_service.LoadIssuesFromProject(ctx, project, &issues_model.IssuesOptions{
+		RepoIDs:      []int64{ctx.Repo.Repository.ID},
+		LabelIDs:     preparedLabelFilter.SelectedLabelIDs,
+		AssigneeID:   assigneeID,
+		MilestoneIDs: milestoneIDs,
 	})
 	if err != nil {
 		ctx.ServerError("LoadIssuesOfColumns", err)
 		return
+	}
+	for _, column := range columns {
+		column.NumIssues = int64(len(issuesMap[column.ID]))
 	}
 
 	if project.CardType != project_model.CardTypeTextOnly {
@@ -372,8 +378,8 @@ func ViewProject(ctx *context.Context) {
 	}
 
 	// Get the exclusive scope for every label ID
-	labelExclusiveScopes := make([]string, 0, len(labelIDs))
-	for _, labelID := range labelIDs {
+	labelExclusiveScopes := make([]string, 0, len(preparedLabelFilter.SelectedLabelIDs))
+	for _, labelID := range preparedLabelFilter.SelectedLabelIDs {
 		foundExclusiveScope := false
 		for _, label := range labels {
 			if label.ID == labelID || label.ID == -labelID {
@@ -388,7 +394,7 @@ func ViewProject(ctx *context.Context) {
 	}
 
 	for _, l := range labels {
-		l.LoadSelectedLabelsAfterClick(labelIDs, labelExclusiveScopes)
+		l.LoadSelectedLabelsAfterClick(preparedLabelFilter.SelectedLabelIDs, labelExclusiveScopes)
 	}
 	ctx.Data["Labels"] = labels
 	ctx.Data["NumLabels"] = len(labels)
@@ -401,6 +407,12 @@ func ViewProject(ctx *context.Context) {
 	}
 	ctx.Data["Assignees"] = shared_user.MakeSelfOnTop(ctx.Doer, assigneeUsers)
 	ctx.Data["AssigneeID"] = assigneeID
+
+	renderMilestones(ctx)
+	if ctx.Written() {
+		return
+	}
+	ctx.Data["MilestoneID"] = milestoneID
 
 	rctx := renderhelper.NewRenderContextRepoComment(ctx, ctx.Repo.Repository)
 	project.RenderedContent, err = markdown.RenderString(rctx, project.Description)
@@ -452,6 +464,54 @@ func UpdateIssueProject(ctx *context.Context) {
 	ctx.JSONOK()
 }
 
+// UpdateIssueProjectColumn moves an issue to a different column within its project
+func UpdateIssueProjectColumn(ctx *context.Context) {
+	issue, err := issues_model.GetIssueByRepoID(ctx, ctx.Repo.Repository.ID, ctx.FormInt64("issue_id"))
+	if err != nil {
+		ctx.NotFoundOrServerError("GetIssueByID", issues_model.IsErrIssueNotExist, err)
+		return
+	}
+	column, err := project_model.GetColumn(ctx, ctx.FormInt64("id"))
+	if err != nil {
+		ctx.NotFoundOrServerError("GetColumn", project_model.IsErrProjectColumnNotExist, err)
+		return
+	}
+
+	if err := issue.LoadProject(ctx); err != nil {
+		ctx.ServerError("LoadProject", err)
+		return
+	}
+
+	issueProjects := []*project_model.Project{issue.Project} // TODO: this is for the multiple project support in the future
+
+	// it must make sure the requested column is in this issue's projects
+	var columnProject *project_model.Project
+	for _, project := range issueProjects {
+		if column.ProjectID == project.ID {
+			columnProject = project
+			break
+		}
+	}
+	if columnProject == nil {
+		ctx.NotFound(nil)
+		return
+	}
+
+	// append to the end of the target column so we don't collide with existing sorting values
+	newSorting, err := project_model.GetColumnIssueNextSorting(ctx, columnProject.ID, column.ID)
+	if err != nil {
+		ctx.ServerError("GetColumnIssueNextSorting", err)
+		return
+	}
+
+	if err := project_service.MoveIssuesOnProjectColumn(ctx, ctx.Doer, column, map[int64]int64{newSorting: issue.ID}); err != nil {
+		ctx.ServerError("MoveIssuesOnProjectColumn", err)
+		return
+	}
+
+	ctx.JSONOK()
+}
+
 // DeleteProjectColumn allows for the deletion of a project column
 func DeleteProjectColumn(ctx *context.Context) {
 	if ctx.Doer == nil {
@@ -461,7 +521,7 @@ func DeleteProjectColumn(ctx *context.Context) {
 		return
 	}
 
-	if !ctx.Repo.IsOwner() && !ctx.Repo.IsAdmin() && !ctx.Repo.CanAccess(perm.AccessModeWrite, unit.TypeProjects) {
+	if !ctx.Repo.Permission.IsOwner() && !ctx.Repo.Permission.IsAdmin() && !ctx.Repo.Permission.CanAccess(perm.AccessModeWrite, unit.TypeProjects) {
 		ctx.JSON(http.StatusForbidden, map[string]string{
 			"message": "Only authorized users are allowed to perform this action.",
 		})
@@ -471,7 +531,7 @@ func DeleteProjectColumn(ctx *context.Context) {
 	project, err := project_model.GetProjectByID(ctx, ctx.PathParamInt64("id"))
 	if err != nil {
 		if project_model.IsErrProjectNotExist(err) {
-			ctx.NotFound("", nil)
+			ctx.NotFound(nil)
 		} else {
 			ctx.ServerError("GetProjectByID", err)
 		}
@@ -508,7 +568,7 @@ func DeleteProjectColumn(ctx *context.Context) {
 // AddColumnToProjectPost allows a new column to be added to a project.
 func AddColumnToProjectPost(ctx *context.Context) {
 	form := web.GetForm(ctx).(*forms.EditProjectColumnForm)
-	if !ctx.Repo.IsOwner() && !ctx.Repo.IsAdmin() && !ctx.Repo.CanAccess(perm.AccessModeWrite, unit.TypeProjects) {
+	if !ctx.Repo.Permission.IsOwner() && !ctx.Repo.Permission.IsAdmin() && !ctx.Repo.Permission.CanAccess(perm.AccessModeWrite, unit.TypeProjects) {
 		ctx.JSON(http.StatusForbidden, map[string]string{
 			"message": "Only authorized users are allowed to perform this action.",
 		})
@@ -518,7 +578,7 @@ func AddColumnToProjectPost(ctx *context.Context) {
 	project, err := project_model.GetProjectForRepoByID(ctx, ctx.Repo.Repository.ID, ctx.PathParamInt64("id"))
 	if err != nil {
 		if project_model.IsErrProjectNotExist(err) {
-			ctx.NotFound("", nil)
+			ctx.NotFound(nil)
 		} else {
 			ctx.ServerError("GetProjectByID", err)
 		}
@@ -546,7 +606,7 @@ func checkProjectColumnChangePermissions(ctx *context.Context) (*project_model.P
 		return nil, nil
 	}
 
-	if !ctx.Repo.IsOwner() && !ctx.Repo.IsAdmin() && !ctx.Repo.CanAccess(perm.AccessModeWrite, unit.TypeProjects) {
+	if !ctx.Repo.Permission.IsOwner() && !ctx.Repo.Permission.IsAdmin() && !ctx.Repo.Permission.CanAccess(perm.AccessModeWrite, unit.TypeProjects) {
 		ctx.JSON(http.StatusForbidden, map[string]string{
 			"message": "Only authorized users are allowed to perform this action.",
 		})
@@ -556,7 +616,7 @@ func checkProjectColumnChangePermissions(ctx *context.Context) (*project_model.P
 	project, err := project_model.GetProjectByID(ctx, ctx.PathParamInt64("id"))
 	if err != nil {
 		if project_model.IsErrProjectNotExist(err) {
-			ctx.NotFound("", nil)
+			ctx.NotFound(nil)
 		} else {
 			ctx.ServerError("GetProjectByID", err)
 		}
@@ -632,7 +692,7 @@ func MoveIssues(ctx *context.Context) {
 		return
 	}
 
-	if !ctx.Repo.IsOwner() && !ctx.Repo.IsAdmin() && !ctx.Repo.CanAccess(perm.AccessModeWrite, unit.TypeProjects) {
+	if !ctx.Repo.Permission.IsOwner() && !ctx.Repo.Permission.IsAdmin() && !ctx.Repo.Permission.CanAccess(perm.AccessModeWrite, unit.TypeProjects) {
 		ctx.JSON(http.StatusForbidden, map[string]string{
 			"message": "Only authorized users are allowed to perform this action.",
 		})
@@ -642,21 +702,21 @@ func MoveIssues(ctx *context.Context) {
 	project, err := project_model.GetProjectByID(ctx, ctx.PathParamInt64("id"))
 	if err != nil {
 		if project_model.IsErrProjectNotExist(err) {
-			ctx.NotFound("ProjectNotExist", nil)
+			ctx.NotFound(nil)
 		} else {
 			ctx.ServerError("GetProjectByID", err)
 		}
 		return
 	}
 	if project.RepoID != ctx.Repo.Repository.ID {
-		ctx.NotFound("InvalidRepoID", nil)
+		ctx.NotFound(nil)
 		return
 	}
 
 	column, err := project_model.GetColumn(ctx, ctx.PathParamInt64("columnID"))
 	if err != nil {
 		if project_model.IsErrProjectColumnNotExist(err) {
-			ctx.NotFound("ProjectColumnNotExist", nil)
+			ctx.NotFound(nil)
 		} else {
 			ctx.ServerError("GetProjectColumn", err)
 		}
@@ -664,7 +724,7 @@ func MoveIssues(ctx *context.Context) {
 	}
 
 	if column.ProjectID != project.ID {
-		ctx.NotFound("ColumnNotInProject", nil)
+		ctx.NotFound(nil)
 		return
 	}
 
@@ -689,7 +749,7 @@ func MoveIssues(ctx *context.Context) {
 	movedIssues, err := issues_model.GetIssuesByIDs(ctx, issueIDs)
 	if err != nil {
 		if issues_model.IsErrIssueNotExist(err) {
-			ctx.NotFound("IssueNotExisting", nil)
+			ctx.NotFound(nil)
 		} else {
 			ctx.ServerError("GetIssueByID", err)
 		}

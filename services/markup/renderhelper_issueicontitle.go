@@ -5,6 +5,7 @@ package markup
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"html/template"
 
@@ -18,9 +19,9 @@ import (
 )
 
 func renderRepoIssueIconTitle(ctx context.Context, opts markup.RenderIssueIconTitleOptions) (_ template.HTML, err error) {
-	webCtx, ok := ctx.Value(gitea_context.WebContextKey).(*gitea_context.Context)
-	if !ok {
-		return "", fmt.Errorf("context is not a web context")
+	webCtx := gitea_context.GetWebContext(ctx)
+	if webCtx == nil {
+		return "", errors.New("context is not a web context")
 	}
 
 	textIssueIndex := fmt.Sprintf("(#%d)", opts.IssueIndex)
@@ -42,7 +43,7 @@ func renderRepoIssueIconTitle(ctx context.Context, opts markup.RenderIssueIconTi
 	}
 
 	if webCtx.Repo.Repository == nil || dbRepo.ID != webCtx.Repo.Repository.ID {
-		perms, err := access.GetUserRepoPermission(ctx, dbRepo, webCtx.Doer)
+		perms, err := access.GetDoerRepoPermission(ctx, dbRepo, webCtx.Doer)
 		if err != nil {
 			return "", err
 		}

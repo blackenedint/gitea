@@ -30,28 +30,29 @@ type Type string
 
 // List of supported packages
 const (
-	TypeAlpine    Type = "alpine"
-	TypeArch      Type = "arch"
-	TypeCargo     Type = "cargo"
-	TypeChef      Type = "chef"
-	TypeComposer  Type = "composer"
-	TypeConan     Type = "conan"
-	TypeConda     Type = "conda"
-	TypeContainer Type = "container"
-	TypeCran      Type = "cran"
-	TypeDebian    Type = "debian"
-	TypeGeneric   Type = "generic"
-	TypeGo        Type = "go"
-	TypeHelm      Type = "helm"
-	TypeMaven     Type = "maven"
-	TypeNpm       Type = "npm"
-	TypeNuGet     Type = "nuget"
-	TypePub       Type = "pub"
-	TypePyPI      Type = "pypi"
-	TypeRpm       Type = "rpm"
-	TypeRubyGems  Type = "rubygems"
-	TypeSwift     Type = "swift"
-	TypeVagrant   Type = "vagrant"
+	TypeAlpine         Type = "alpine"
+	TypeArch           Type = "arch"
+	TypeCargo          Type = "cargo"
+	TypeChef           Type = "chef"
+	TypeComposer       Type = "composer"
+	TypeConan          Type = "conan"
+	TypeConda          Type = "conda"
+	TypeContainer      Type = "container"
+	TypeCran           Type = "cran"
+	TypeDebian         Type = "debian"
+	TypeGeneric        Type = "generic"
+	TypeGo             Type = "go"
+	TypeHelm           Type = "helm"
+	TypeMaven          Type = "maven"
+	TypeNpm            Type = "npm"
+	TypeNuGet          Type = "nuget"
+	TypePub            Type = "pub"
+	TypePyPI           Type = "pypi"
+	TypeRpm            Type = "rpm"
+	TypeRubyGems       Type = "rubygems"
+	TypeSwift          Type = "swift"
+	TypeTerraformState Type = "terraform"
+	TypeVagrant        Type = "vagrant"
 )
 
 var TypeList = []Type{
@@ -76,6 +77,7 @@ var TypeList = []Type{
 	TypeRpm,
 	TypeRubyGems,
 	TypeSwift,
+	TypeTerraformState,
 	TypeVagrant,
 }
 
@@ -124,10 +126,12 @@ func (pt Type) Name() string {
 		return "RubyGems"
 	case TypeSwift:
 		return "Swift"
+	case TypeTerraformState:
+		return "Terraform State"
 	case TypeVagrant:
 		return "Vagrant"
 	}
-	panic(fmt.Sprintf("unknown package type: %s", string(pt)))
+	panic("unknown package type: " + string(pt))
 }
 
 // SVGName gets the name of the package type svg image
@@ -175,10 +179,12 @@ func (pt Type) SVGName() string {
 		return "gitea-rubygems"
 	case TypeSwift:
 		return "gitea-swift"
+	case TypeTerraformState:
+		return "gitea-terraform"
 	case TypeVagrant:
 		return "gitea-vagrant"
 	}
-	panic(fmt.Sprintf("unknown package type: %s", string(pt)))
+	panic("unknown package type: " + string(pt))
 }
 
 // Package represents a package
@@ -225,6 +231,11 @@ func DeletePackageByID(ctx context.Context, packageID int64) error {
 // SetRepositoryLink sets the linked repository
 func SetRepositoryLink(ctx context.Context, packageID, repoID int64) error {
 	_, err := db.GetEngine(ctx).ID(packageID).Cols("repo_id").Update(&Package{RepoID: repoID})
+	return err
+}
+
+func UnlinkRepository(ctx context.Context, packageID int64) error {
+	_, err := db.GetEngine(ctx).ID(packageID).Cols("repo_id").Update(&Package{RepoID: 0})
 	return err
 }
 

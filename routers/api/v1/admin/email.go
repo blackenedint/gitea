@@ -42,7 +42,7 @@ func GetAllEmails(ctx *context.APIContext) {
 		ListOptions: listOptions,
 	})
 	if err != nil {
-		ctx.Error(http.StatusInternalServerError, "GetAllEmails", err)
+		ctx.APIErrorInternal(err)
 		return
 	}
 
@@ -51,7 +51,7 @@ func GetAllEmails(ctx *context.APIContext) {
 		results[i] = convert.ToEmailSearch(emails[i])
 	}
 
-	ctx.SetLinkHeader(int(maxResults), listOptions.PageSize)
+	ctx.SetLinkHeader(maxResults, listOptions.PageSize)
 	ctx.SetTotalCountHeader(maxResults)
 	ctx.JSON(http.StatusOK, &results)
 }

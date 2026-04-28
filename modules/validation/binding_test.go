@@ -27,7 +27,6 @@ type (
 	TestForm struct {
 		BranchName   string `form:"BranchName" binding:"GitRefName"`
 		URL          string `form:"ValidUrl" binding:"ValidUrl"`
-		URLs         string `form:"ValidUrls" binding:"ValidUrlList"`
 		GlobPattern  string `form:"GlobPattern" binding:"GlobPattern"`
 		RegexPattern string `form:"RegexPattern" binding:"RegexPattern"`
 	}
@@ -47,7 +46,7 @@ func performValidationTest(t *testing.T, testCase validationTestCase) {
 		assert.Equal(t, testCase.expectedErrors, actual)
 	})
 
-	req, err := http.NewRequest("POST", testRoute, nil)
+	req, err := http.NewRequest(http.MethodPost, testRoute, nil)
 	if err != nil {
 		panic(err)
 	}

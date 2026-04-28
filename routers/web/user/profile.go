@@ -56,34 +56,29 @@ func OwnerProfile(ctx *context.Context) {
 func userProfile(ctx *context.Context) {
 	// check view permissions
 	if !user_model.IsUserVisibleToViewer(ctx, ctx.ContextUser, ctx.Doer) {
-		ctx.NotFound("user", fmt.Errorf("%s", ctx.ContextUser.Name))
+		ctx.NotFound(fmt.Errorf("%s", ctx.ContextUser.Name))
 		return
 	}
 
 	ctx.Data["Title"] = ctx.ContextUser.DisplayName()
 	ctx.Data["PageIsUserProfile"] = true
 
-	// prepare heatmap data
-	if setting.Service.EnableUserHeatmap {
-		data, err := activities_model.GetUserHeatmapDataByUser(ctx, ctx.ContextUser, ctx.Doer)
-		if err != nil {
-			ctx.ServerError("GetUserHeatmapDataByUser", err)
-			return
-		}
-		ctx.Data["HeatmapData"] = data
-		ctx.Data["HeatmapTotalContributions"] = activities_model.GetTotalContributionsInHeatmap(data)
-	}
-
 	profileDbRepo, profileReadmeBlob := shared_user.FindOwnerProfileReadme(ctx, ctx.Doer)
 
-	showPrivate := ctx.IsSigned && (ctx.Doer.IsAdmin || ctx.Doer.ID == ctx.ContextUser.ID)
-	prepareUserProfileTabData(ctx, showPrivate, profileDbRepo, profileReadmeBlob)
-	// call PrepareContextForProfileBigAvatar later to avoid re-querying the NumFollowers & NumFollowing
-	shared_user.PrepareContextForProfileBigAvatar(ctx)
+	prepareUserProfileTabData(ctx, profileDbRepo, profileReadmeBlob)
+
+	// prepare the user nav header data after "prepareUserProfileTabData" to avoid re-querying the NumFollowers & NumFollowing
+	// because ctx.Data["NumFollowers"] and "NumFollowing" logic duplicates in both of them
+	// and the "profile readme" related logic also duplicates in both of FindOwnerProfileReadme and RenderUserOrgHeader
+	// TODO: it is a bad design and should be refactored later,
+	if _, err := shared_user.RenderUserOrgHeader(ctx); err != nil {
+		ctx.ServerError("RenderUserOrgHeader", err)
+		return
+	}
 	ctx.HTML(http.StatusOK, tplProfile)
 }
 
-func prepareUserProfileTabData(ctx *context.Context, showPrivate bool, profileDbRepo *repo_model.Repository, profileReadme *git.Blob) {
+func prepareUserProfileTabData(ctx *context.Context, profileDbRepo *repo_model.Repository, profileReadme *git.Blob) {
 	// if there is a profile readme, default to "overview" page, otherwise, default to "repositories" page
 	// if there is not a profile readme, the overview tab should be treated as the repositories tab
 	tab := ctx.FormString("tab")
@@ -107,7 +102,8 @@ func prepareUserProfileTabData(ctx *context.Context, showPrivate bool, profileDb
 	var (
 		repos   []*repo_model.Repository
 		count   int64
-		total   int
+		total   int64
+		curRows int
 		orderBy db.SearchOrderBy
 	)
 
@@ -161,14 +157,20 @@ func prepareUserProfileTabData(ctx *context.Context, showPrivate bool, profileDb
 	switch tab {
 	case "followers":
 		ctx.Data["Cards"] = followers
-		total = int(numFollowers)
+		total = numFollowers
 	case "following":
 		ctx.Data["Cards"] = following
-		total = int(numFollowing)
+		total = numFollowing
 	case "activity":
+		if setting.Service.EnableUserHeatmap && activities_model.ActivityReadable(ctx.ContextUser, ctx.Doer) {
+			ctx.Data["EnableHeatmap"] = true
+			ctx.Data["HeatmapURL"] = ctx.ContextUser.HomeLink() + "/-/heatmap"
+		}
+
 		date := ctx.FormString("date")
 		pagingNum = setting.UI.FeedPagingNum
-		items, count, err := feed_service.GetFeeds(ctx, activities_model.GetFeedsOptions{
+		showPrivate := ctx.IsSigned && (ctx.Doer.IsAdmin || ctx.Doer.ID == ctx.ContextUser.ID)
+		items, feedCount, err := feed_service.GetFeedsForDashboard(ctx, activities_model.GetFeedsOptions{
 			RequestedUser:   ctx.ContextUser,
 			Actor:           ctx.Doer,
 			IncludePrivate:  showPrivate,
@@ -186,11 +188,12 @@ func prepareUserProfileTabData(ctx *context.Context, showPrivate bool, profileDb
 		}
 		ctx.Data["Feeds"] = items
 		ctx.Data["Date"] = date
-
-		total = int(count)
+		curRows = len(items)
+		total = feedCount
 	case "stars":
 		ctx.Data["PageIsProfileStarList"] = true
-		repos, count, err = repo_model.SearchRepository(ctx, &repo_model.SearchRepoOptions{
+		ctx.Data["ShowRepoOwnerOnList"] = true
+		repos, count, err = repo_model.SearchRepository(ctx, repo_model.SearchRepoOptions{
 			ListOptions: db.ListOptions{
 				PageSize: pagingNum,
 				Page:     page,
@@ -215,9 +218,9 @@ func prepareUserProfileTabData(ctx *context.Context, showPrivate bool, profileDb
 			return
 		}
 
-		total = int(count)
+		total = count
 	case "watching":
-		repos, count, err = repo_model.SearchRepository(ctx, &repo_model.SearchRepoOptions{
+		repos, count, err = repo_model.SearchRepository(ctx, repo_model.SearchRepoOptions{
 			ListOptions: db.ListOptions{
 				PageSize: pagingNum,
 				Page:     page,
@@ -242,13 +245,13 @@ func prepareUserProfileTabData(ctx *context.Context, showPrivate bool, profileDb
 			return
 		}
 
-		total = int(count)
+		total = count
 	case "overview":
 		if bytes, err := profileReadme.GetBlobContent(setting.UI.MaxDisplayFileSize); err != nil {
 			log.Error("failed to GetBlobContent: %v", err)
 		} else {
 			rctx := renderhelper.NewRenderContextRepoFile(ctx, profileDbRepo, renderhelper.RepoFileOptions{
-				CurrentRefPath: path.Join("branch", util.PathEscapeSegments(profileDbRepo.DefaultBranch)),
+				CurrentRefSubURL: path.Join("branch", util.PathEscapeSegments(profileDbRepo.DefaultBranch)),
 			})
 			if profileContent, err := markdown.RenderString(rctx, bytes); err != nil {
 				log.Error("failed to RenderString: %v", err)
@@ -258,8 +261,8 @@ func prepareUserProfileTabData(ctx *context.Context, showPrivate bool, profileDb
 		}
 	case "organizations":
 		orgs, count, err := db.FindAndCount[organization.Organization](ctx, organization.FindOrgOptions{
-			UserID:         ctx.ContextUser.ID,
-			IncludePrivate: showPrivate,
+			UserID:            ctx.ContextUser.ID,
+			IncludeVisibility: organization.DoerViewOtherVisibility(ctx.Doer, ctx.ContextUser),
 			ListOptions: db.ListOptions{
 				Page:     page,
 				PageSize: pagingNum,
@@ -270,9 +273,9 @@ func prepareUserProfileTabData(ctx *context.Context, showPrivate bool, profileDb
 			return
 		}
 		ctx.Data["Cards"] = orgs
-		total = int(count)
+		total = count
 	default: // default to "repositories"
-		repos, count, err = repo_model.SearchRepository(ctx, &repo_model.SearchRepoOptions{
+		repos, count, err = repo_model.SearchRepository(ctx, repo_model.SearchRepoOptions{
 			ListOptions: db.ListOptions{
 				PageSize: pagingNum,
 				Page:     page,
@@ -297,24 +300,26 @@ func prepareUserProfileTabData(ctx *context.Context, showPrivate bool, profileDb
 			return
 		}
 
-		total = int(count)
+		total = count
 	}
 	ctx.Data["Repos"] = repos
 	ctx.Data["Total"] = total
 
-	err = shared_user.LoadHeaderCount(ctx)
-	if err != nil {
-		ctx.ServerError("LoadHeaderCount", err)
+	if _, err := shared_user.RenderUserOrgHeader(ctx); err != nil {
+		ctx.ServerError("RenderUserOrgHeader", err)
 		return
 	}
 
 	pager := context.NewPagination(total, pagingNum, page, 5)
+	if tab == "activity" {
+		pager.WithCurRows(curRows)
+	}
 	pager.AddParamFromRequest(ctx.Req)
 	ctx.Data["Page"] = pager
 }
 
-// Action response for follow/unfollow user request
-func Action(ctx *context.Context) {
+// ActionUserFollow is for follow/unfollow user request
+func ActionUserFollow(ctx *context.Context) {
 	var err error
 	switch ctx.FormString("action") {
 	case "follow":
@@ -325,12 +330,14 @@ func Action(ctx *context.Context) {
 
 	if err != nil {
 		log.Error("Failed to apply action %q: %v", ctx.FormString("action"), err)
-		ctx.Error(http.StatusBadRequest, fmt.Sprintf("Action %q failed", ctx.FormString("action")))
+		ctx.HTTPError(http.StatusBadRequest, fmt.Sprintf("Action %q failed", ctx.FormString("action")))
 		return
 	}
-
+	if _, err := shared_user.RenderUserOrgHeader(ctx); err != nil {
+		ctx.ServerError("RenderUserOrgHeader", err)
+		return
+	}
 	if ctx.ContextUser.IsIndividual() {
-		shared_user.PrepareContextForProfileBigAvatar(ctx)
 		ctx.HTML(http.StatusOK, tplProfileBigAvatar)
 		return
 	} else if ctx.ContextUser.IsOrganization() {
@@ -339,6 +346,6 @@ func Action(ctx *context.Context) {
 		ctx.HTML(http.StatusOK, tplFollowUnfollow)
 		return
 	}
-	log.Error("Failed to apply action %q: unsupport context user type: %s", ctx.FormString("action"), ctx.ContextUser.Type)
-	ctx.Error(http.StatusBadRequest, fmt.Sprintf("Action %q failed", ctx.FormString("action")))
+	log.Error("Failed to apply action %q: unsupported context user type: %s", ctx.FormString("action"), ctx.ContextUser.Type)
+	ctx.HTTPError(http.StatusBadRequest, fmt.Sprintf("Action %q failed", ctx.FormString("action")))
 }

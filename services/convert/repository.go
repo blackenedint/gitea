@@ -8,12 +8,14 @@ import (
 	"time"
 
 	"code.gitea.io/gitea/models/db"
+	git_model "code.gitea.io/gitea/models/git"
 	"code.gitea.io/gitea/models/perm"
 	access_model "code.gitea.io/gitea/models/perm/access"
 	repo_model "code.gitea.io/gitea/models/repo"
 	unit_model "code.gitea.io/gitea/models/unit"
 	"code.gitea.io/gitea/modules/log"
 	api "code.gitea.io/gitea/modules/structs"
+	"code.gitea.io/gitea/modules/util"
 )
 
 // ToRepo converts a Repository to api.Repository
@@ -33,7 +35,7 @@ func innerToRepo(ctx context.Context, repo *repo_model.Repository, permissionInR
 		permissionInRepo.SetUnitsWithDefaultAccessMode(repo.Units, permissionInRepo.AccessMode)
 	}
 
-	// TODO: ideally we should pass "doer" into "ToRepo" to to make CloneLink could generate user-related links
+	// TODO: ideally we should pass "doer" into "ToRepo" to make CloneLink could generate user-related links
 	// And passing "doer" in will also fix other FIXMEs in this file.
 	cloneLink := repo.CloneLinkGeneral(ctx) // no doer at the moment
 	permission := &api.Permission{
@@ -97,9 +99,12 @@ func innerToRepo(ctx context.Context, repo *repo_model.Repository, permissionInR
 	allowSquash := false
 	allowFastForwardOnly := false
 	allowRebaseUpdate := false
+	allowManualMerge := true
+	autodetectManualMerge := false
 	defaultDeleteBranchAfterMerge := false
 	defaultMergeStyle := repo_model.MergeStyleMerge
 	defaultAllowMaintainerEdit := false
+	defaultTargetBranch := ""
 	if unit, err := repo.GetUnit(ctx, unit_model.TypePullRequests); err == nil {
 		config := unit.PullRequestsConfig()
 		hasPullRequests = true
@@ -110,9 +115,12 @@ func innerToRepo(ctx context.Context, repo *repo_model.Repository, permissionInR
 		allowSquash = config.AllowSquash
 		allowFastForwardOnly = config.AllowFastForwardOnly
 		allowRebaseUpdate = config.AllowRebaseUpdate
+		allowManualMerge = config.AllowManualMerge
+		autodetectManualMerge = config.AutodetectManualMerge
 		defaultDeleteBranchAfterMerge = config.DefaultDeleteBranchAfterMerge
-		defaultMergeStyle = config.GetDefaultMergeStyle()
+		defaultMergeStyle = config.DefaultMergeStyle
 		defaultAllowMaintainerEdit = config.DefaultAllowMaintainerEdit
+		defaultTargetBranch = config.DefaultTargetBranch
 	}
 	hasProjects := false
 	projectsMode := repo_model.ProjectsModeAll
@@ -122,20 +130,10 @@ func innerToRepo(ctx context.Context, repo *repo_model.Repository, permissionInR
 		projectsMode = config.ProjectsMode
 	}
 
-	hasReleases := false
-	if _, err := repo.GetUnit(ctx, unit_model.TypeReleases); err == nil {
-		hasReleases = true
-	}
-
-	hasPackages := false
-	if _, err := repo.GetUnit(ctx, unit_model.TypePackages); err == nil {
-		hasPackages = true
-	}
-
-	hasActions := false
-	if _, err := repo.GetUnit(ctx, unit_model.TypeActions); err == nil {
-		hasActions = true
-	}
+	hasCode := repo.UnitEnabled(ctx, unit_model.TypeCode)
+	hasReleases := repo.UnitEnabled(ctx, unit_model.TypeReleases)
+	hasPackages := repo.UnitEnabled(ctx, unit_model.TypePackages)
+	hasActions := repo.UnitEnabled(ctx, unit_model.TypeActions)
 
 	if err := repo.LoadOwner(ctx); err != nil {
 		return nil
@@ -146,6 +144,11 @@ func innerToRepo(ctx context.Context, repo *repo_model.Repository, permissionInR
 		IncludeTags:   false,
 		RepoID:        repo.ID,
 	})
+
+	branchCount, err := git_model.CountBranches(ctx, repo.ID, false)
+	if err != nil {
+		log.Error("CountBranches [%d]: %v", repo.ID, err)
+	}
 
 	mirrorInterval := ""
 	var mirrorUpdated time.Time
@@ -208,6 +211,7 @@ func innerToRepo(ctx context.Context, repo *repo_model.Repository, permissionInR
 		Stars:                         repo.NumStars,
 		Forks:                         repo.NumForks,
 		Watchers:                      repo.NumWatches,
+		BranchCount:                   int(branchCount),
 		OpenIssues:                    repo.NumOpenIssues,
 		OpenPulls:                     repo.NumOpenPulls,
 		Releases:                      int(numReleases),
@@ -216,6 +220,7 @@ func innerToRepo(ctx context.Context, repo *repo_model.Repository, permissionInR
 		Updated:                       repo.UpdatedUnix.AsTime(),
 		ArchivedAt:                    repo.ArchivedUnix.AsTime(),
 		Permissions:                   permission,
+		HasCode:                       hasCode,
 		HasIssues:                     hasIssues,
 		ExternalTracker:               externalTracker,
 		InternalTracker:               internalTracker,
@@ -234,17 +239,20 @@ func innerToRepo(ctx context.Context, repo *repo_model.Repository, permissionInR
 		AllowSquash:                   allowSquash,
 		AllowFastForwardOnly:          allowFastForwardOnly,
 		AllowRebaseUpdate:             allowRebaseUpdate,
+		AllowManualMerge:              allowManualMerge,
+		AutodetectManualMerge:         autodetectManualMerge,
 		DefaultDeleteBranchAfterMerge: defaultDeleteBranchAfterMerge,
 		DefaultMergeStyle:             string(defaultMergeStyle),
 		DefaultAllowMaintainerEdit:    defaultAllowMaintainerEdit,
+		DefaultTargetBranch:           defaultTargetBranch,
 		AvatarURL:                     repo.AvatarLink(ctx),
 		Internal:                      !repo.IsPrivate && repo.Owner.Visibility == api.VisibleTypePrivate,
 		MirrorInterval:                mirrorInterval,
 		MirrorUpdated:                 mirrorUpdated,
 		RepoTransfer:                  transfer,
-		Topics:                        repo.Topics,
+		Topics:                        util.SliceNilAsEmpty(repo.Topics),
 		ObjectFormatName:              repo.ObjectFormatName,
-		Licenses:                      repoLicenses.StringList(),
+		Licenses:                      util.SliceNilAsEmpty(repoLicenses.StringList()),
 	}
 }
 

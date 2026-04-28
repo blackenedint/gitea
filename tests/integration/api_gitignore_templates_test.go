@@ -4,7 +4,6 @@
 package integration
 
 import (
-	"fmt"
 	"net/http"
 	"testing"
 
@@ -23,8 +22,7 @@ func TestAPIListGitignoresTemplates(t *testing.T) {
 	resp := MakeRequest(t, req, http.StatusOK)
 
 	// This tests if the API returns a list of strings
-	var gitignoreList []string
-	DecodeJSON(t, resp, &gitignoreList)
+	DecodeJSON(t, resp, []string{})
 }
 
 func TestAPIGetGitignoreTemplateInfo(t *testing.T) {
@@ -38,12 +36,11 @@ func TestAPIGetGitignoreTemplateInfo(t *testing.T) {
 	// Use the first template for the test
 	templateName := repo_module.Gitignores[0]
 
-	urlStr := fmt.Sprintf("/api/v1/gitignore/templates/%s", templateName)
+	urlStr := "/api/v1/gitignore/templates/" + templateName
 	req := NewRequest(t, "GET", urlStr)
 	resp := MakeRequest(t, req, http.StatusOK)
 
-	var templateInfo api.GitignoreTemplateInfo
-	DecodeJSON(t, resp, &templateInfo)
+	templateInfo := DecodeJSON(t, resp, &api.GitignoreTemplateInfo{})
 
 	// We get the text of the template here
 	text, _ := options.Gitignore(templateName)

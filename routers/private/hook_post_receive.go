@@ -14,6 +14,7 @@ import (
 	repo_model "code.gitea.io/gitea/models/repo"
 	user_model "code.gitea.io/gitea/models/user"
 	"code.gitea.io/gitea/modules/cache"
+	"code.gitea.io/gitea/modules/cachegroup"
 	"code.gitea.io/gitea/modules/git"
 	"code.gitea.io/gitea/modules/gitrepo"
 	"code.gitea.io/gitea/modules/log"
@@ -105,10 +106,10 @@ func HookPostReceive(ctx *gitea_context.PrivateContext) {
 			}
 
 			if update.IsDelRef() {
-				if err := git_model.AddDeletedBranch(ctx, repo.ID, update.RefFullName.BranchName(), update.PusherID); err != nil {
-					log.Error("Failed to add deleted branch: %s/%s Error: %v", ownerName, repoName, err)
+				if err := git_model.MarkBranchAsDeleted(ctx, repo.ID, update.RefFullName.BranchName(), update.PusherID); err != nil {
+					log.Error("Failed to mark branch as deleted: %s/%s Error: %v", ownerName, repoName, err)
 					ctx.JSON(http.StatusInternalServerError, private.HookPostReceiveResult{
-						Err: fmt.Sprintf("Failed to add deleted branch: %s/%s Error: %v", ownerName, repoName, err),
+						Err: fmt.Sprintf("Failed to mark branch as deleted: %s/%s Error: %v", ownerName, repoName, err),
 					})
 					return
 				}
@@ -191,7 +192,7 @@ func HookPostReceive(ctx *gitea_context.PrivateContext) {
 			})
 			return
 		}
-		perm, err := access_model.GetUserRepoPermission(ctx, repo, pusher)
+		perm, err := access_model.GetDoerRepoPermission(ctx, repo, pusher)
 		if err != nil {
 			log.Error("Failed to Update: %s/%s Error: %v", ownerName, repoName, err)
 			ctx.JSON(http.StatusInternalServerError, private.HookPostReceiveResult{
@@ -206,25 +207,19 @@ func HookPostReceive(ctx *gitea_context.PrivateContext) {
 			return
 		}
 
-		cols := make([]string, 0, 2)
-
-		if isPrivate.Has() {
+		// FIXME: these options are not quite right, for example: changing visibility should do more works than just setting the is_private flag
+		// These options should only be used for "push-to-create"
+		if isPrivate.Has() && repo.IsPrivate != isPrivate.Value() {
+			// TODO: it needs to do more work
 			repo.IsPrivate = isPrivate.Value()
-			cols = append(cols, "is_private")
+			if err = repo_model.UpdateRepositoryColsNoAutoTime(ctx, repo, "is_private"); err != nil {
+				ctx.JSON(http.StatusInternalServerError, private.HookPostReceiveResult{Err: "Failed to change visibility"})
+			}
 		}
-
-		if isTemplate.Has() {
+		if isTemplate.Has() && repo.IsTemplate != isTemplate.Value() {
 			repo.IsTemplate = isTemplate.Value()
-			cols = append(cols, "is_template")
-		}
-
-		if len(cols) > 0 {
-			if err := repo_model.UpdateRepositoryCols(ctx, repo, cols...); err != nil {
-				log.Error("Failed to Update: %s/%s Error: %v", ownerName, repoName, err)
-				ctx.JSON(http.StatusInternalServerError, private.HookPostReceiveResult{
-					Err: fmt.Sprintf("Failed to Update: %s/%s Error: %v", ownerName, repoName, err),
-				})
-				return
+			if err = repo_model.UpdateRepositoryColsNoAutoTime(ctx, repo, "is_template"); err != nil {
+				ctx.JSON(http.StatusInternalServerError, private.HookPostReceiveResult{Err: "Failed to change template status"})
 			}
 		}
 	}
@@ -303,14 +298,11 @@ func HookPostReceive(ctx *gitea_context.PrivateContext) {
 			}
 
 			if pr == nil {
-				if repo.IsFork {
-					branch = fmt.Sprintf("%s:%s", repo.OwnerName, branch)
-				}
 				results = append(results, private.HookPostReceiveBranchResult{
 					Message: setting.Git.PullRequestPushMessage && baseRepo.AllowsPulls(ctx),
 					Create:  true,
 					Branch:  branch,
-					URL:     fmt.Sprintf("%s/compare/%s...%s", baseRepo.HTMLURL(), util.PathEscapeSegments(baseRepo.DefaultBranch), util.PathEscapeSegments(branch)),
+					URL:     fmt.Sprintf("%s/pulls/new/%s", repo.HTMLURL(), util.PathEscapeSegments(branch)),
 				})
 			} else {
 				results = append(results, private.HookPostReceiveBranchResult{
@@ -329,9 +321,7 @@ func HookPostReceive(ctx *gitea_context.PrivateContext) {
 }
 
 func loadContextCacheUser(ctx context.Context, id int64) (*user_model.User, error) {
-	return cache.GetWithContextCache(ctx, "hook_post_receive_user", id, func() (*user_model.User, error) {
-		return user_model.GetUserByID(ctx, id)
-	})
+	return cache.GetWithContextCache(ctx, cachegroup.User, id, user_model.GetUserByID)
 }
 
 // handlePullRequestMerging handle pull request merging, a pull request action should push at least 1 commit

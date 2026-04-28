@@ -21,9 +21,9 @@ func Test_getStorageInheritNameSectionTypeForActions(t *testing.T) {
 	assert.NoError(t, loadActionsFrom(cfg))
 
 	assert.EqualValues(t, "minio", Actions.LogStorage.Type)
-	assert.EqualValues(t, "actions_log/", Actions.LogStorage.MinioConfig.BasePath)
+	assert.Equal(t, "actions_log/", Actions.LogStorage.MinioConfig.BasePath)
 	assert.EqualValues(t, "minio", Actions.ArtifactStorage.Type)
-	assert.EqualValues(t, "actions_artifacts/", Actions.ArtifactStorage.MinioConfig.BasePath)
+	assert.Equal(t, "actions_artifacts/", Actions.ArtifactStorage.MinioConfig.BasePath)
 
 	iniStr = `
 [storage.actions_log]
@@ -34,9 +34,9 @@ STORAGE_TYPE = minio
 	assert.NoError(t, loadActionsFrom(cfg))
 
 	assert.EqualValues(t, "minio", Actions.LogStorage.Type)
-	assert.EqualValues(t, "actions_log/", Actions.LogStorage.MinioConfig.BasePath)
+	assert.Equal(t, "actions_log/", Actions.LogStorage.MinioConfig.BasePath)
 	assert.EqualValues(t, "local", Actions.ArtifactStorage.Type)
-	assert.EqualValues(t, "actions_artifacts", filepath.Base(Actions.ArtifactStorage.Path))
+	assert.Equal(t, "actions_artifacts", filepath.Base(Actions.ArtifactStorage.Path))
 
 	iniStr = `
 [storage.actions_log]
@@ -50,9 +50,9 @@ STORAGE_TYPE = minio
 	assert.NoError(t, loadActionsFrom(cfg))
 
 	assert.EqualValues(t, "minio", Actions.LogStorage.Type)
-	assert.EqualValues(t, "actions_log/", Actions.LogStorage.MinioConfig.BasePath)
+	assert.Equal(t, "actions_log/", Actions.LogStorage.MinioConfig.BasePath)
 	assert.EqualValues(t, "local", Actions.ArtifactStorage.Type)
-	assert.EqualValues(t, "actions_artifacts", filepath.Base(Actions.ArtifactStorage.Path))
+	assert.Equal(t, "actions_artifacts", filepath.Base(Actions.ArtifactStorage.Path))
 
 	iniStr = `
 [storage.actions_artifacts]
@@ -66,9 +66,9 @@ STORAGE_TYPE = minio
 	assert.NoError(t, loadActionsFrom(cfg))
 
 	assert.EqualValues(t, "local", Actions.LogStorage.Type)
-	assert.EqualValues(t, "actions_log", filepath.Base(Actions.LogStorage.Path))
+	assert.Equal(t, "actions_log", filepath.Base(Actions.LogStorage.Path))
 	assert.EqualValues(t, "minio", Actions.ArtifactStorage.Type)
-	assert.EqualValues(t, "actions_artifacts/", Actions.ArtifactStorage.MinioConfig.BasePath)
+	assert.Equal(t, "actions_artifacts/", Actions.ArtifactStorage.MinioConfig.BasePath)
 
 	iniStr = `
 [storage.actions_artifacts]
@@ -82,9 +82,9 @@ STORAGE_TYPE = minio
 	assert.NoError(t, loadActionsFrom(cfg))
 
 	assert.EqualValues(t, "local", Actions.LogStorage.Type)
-	assert.EqualValues(t, "actions_log", filepath.Base(Actions.LogStorage.Path))
+	assert.Equal(t, "actions_log", filepath.Base(Actions.LogStorage.Path))
 	assert.EqualValues(t, "minio", Actions.ArtifactStorage.Type)
-	assert.EqualValues(t, "actions_artifacts/", Actions.ArtifactStorage.MinioConfig.BasePath)
+	assert.Equal(t, "actions_artifacts/", Actions.ArtifactStorage.MinioConfig.BasePath)
 
 	iniStr = ``
 	cfg, err = NewConfigProviderFromData(iniStr)
@@ -92,9 +92,68 @@ STORAGE_TYPE = minio
 	assert.NoError(t, loadActionsFrom(cfg))
 
 	assert.EqualValues(t, "local", Actions.LogStorage.Type)
-	assert.EqualValues(t, "actions_log", filepath.Base(Actions.LogStorage.Path))
+	assert.Equal(t, "actions_log", filepath.Base(Actions.LogStorage.Path))
 	assert.EqualValues(t, "local", Actions.ArtifactStorage.Type)
-	assert.EqualValues(t, "actions_artifacts", filepath.Base(Actions.ArtifactStorage.Path))
+	assert.Equal(t, "actions_artifacts", filepath.Base(Actions.ArtifactStorage.Path))
+}
+
+func Test_WorkflowDirs(t *testing.T) {
+	oldActions := Actions
+	defer func() {
+		Actions = oldActions
+	}()
+
+	tests := []struct {
+		name     string
+		iniStr   string
+		wantDirs []string
+		wantErr  bool
+	}{
+		{
+			name:     "default",
+			iniStr:   `[actions]`,
+			wantDirs: []string{".gitea/workflows", ".github/workflows"},
+		},
+		{
+			name:     "single dir",
+			iniStr:   "[actions]\nWORKFLOW_DIRS = .github/workflows",
+			wantDirs: []string{".github/workflows"},
+		},
+		{
+			name:     "custom order",
+			iniStr:   "[actions]\nWORKFLOW_DIRS = .github/workflows,.gitea/workflows",
+			wantDirs: []string{".github/workflows", ".gitea/workflows"},
+		},
+		{
+			name:     "whitespace trimming",
+			iniStr:   "[actions]\nWORKFLOW_DIRS = .gitea/workflows , .github/workflows ",
+			wantDirs: []string{".gitea/workflows", ".github/workflows"},
+		},
+		{
+			name:     "trailing slash normalization",
+			iniStr:   "[actions]\nWORKFLOW_DIRS = .gitea/workflows/,.github/workflows/",
+			wantDirs: []string{".gitea/workflows", ".github/workflows"},
+		},
+		{
+			name:    "only commas and whitespace",
+			iniStr:  "[actions]\nWORKFLOW_DIRS = , , ,",
+			wantErr: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg, err := NewConfigProviderFromData(tt.iniStr)
+			require.NoError(t, err)
+			err = loadActionsFrom(cfg)
+			if tt.wantErr {
+				require.Error(t, err)
+				return
+			}
+			require.NoError(t, err)
+			assert.Equal(t, tt.wantDirs, Actions.WorkflowDirs)
+		})
+	}
 }
 
 func Test_getDefaultActionsURLForActions(t *testing.T) {
@@ -175,7 +234,7 @@ DEFAULT_ACTIONS_URL = gitea
 			if !tt.wantErr(t, loadActionsFrom(cfg)) {
 				return
 			}
-			assert.EqualValues(t, tt.wantURL, Actions.DefaultActionsURL.URL())
+			assert.Equal(t, tt.wantURL, Actions.DefaultActionsURL.URL())
 		})
 	}
 }

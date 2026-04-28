@@ -4,21 +4,20 @@
 package repo
 
 import (
-	stdCtx "context"
 	"fmt"
 	"math/big"
 	"net/http"
-	"net/url"
 	"sort"
+	"strconv"
 
 	activities_model "code.gitea.io/gitea/models/activities"
+	asymkey_model "code.gitea.io/gitea/models/asymkey"
 	"code.gitea.io/gitea/models/db"
 	git_model "code.gitea.io/gitea/models/git"
 	issues_model "code.gitea.io/gitea/models/issues"
 	"code.gitea.io/gitea/models/organization"
 	access_model "code.gitea.io/gitea/models/perm/access"
 	project_model "code.gitea.io/gitea/models/project"
-	pull_model "code.gitea.io/gitea/models/pull"
 	"code.gitea.io/gitea/models/renderhelper"
 	repo_model "code.gitea.io/gitea/models/repo"
 	"code.gitea.io/gitea/models/unit"
@@ -29,8 +28,9 @@ import (
 	"code.gitea.io/gitea/modules/markup"
 	"code.gitea.io/gitea/modules/markup/markdown"
 	"code.gitea.io/gitea/modules/setting"
-	"code.gitea.io/gitea/modules/templates"
 	"code.gitea.io/gitea/modules/templates/vars"
+	"code.gitea.io/gitea/modules/util"
+	"code.gitea.io/gitea/modules/web/middleware"
 	asymkey_service "code.gitea.io/gitea/services/asymkey"
 	"code.gitea.io/gitea/services/context"
 	"code.gitea.io/gitea/services/context/upload"
@@ -40,99 +40,80 @@ import (
 )
 
 // roleDescriptor returns the role descriptor for a comment in/with the given repo, poster and issue
-func roleDescriptor(ctx stdCtx.Context, repo *repo_model.Repository, poster *user_model.User, permsCache map[int64]access_model.Permission, issue *issues_model.Issue, hasOriginalAuthor bool) (issues_model.RoleDescriptor, error) {
-	roleDescriptor := issues_model.RoleDescriptor{}
-
+func roleDescriptor(ctx *context.Context, repo *repo_model.Repository, poster *user_model.User, permsCache map[int64]access_model.Permission, issue *issues_model.Issue, hasOriginalAuthor bool) (roleDesc issues_model.RoleDescriptor, err error) {
 	if hasOriginalAuthor {
-		return roleDescriptor, nil
+		// the poster is a migrated user, so no need to detect the role
+		return roleDesc, nil
 	}
 
-	var perm access_model.Permission
-	var err error
-	if permsCache != nil {
-		var ok bool
-		perm, ok = permsCache[poster.ID]
-		if !ok {
-			perm, err = access_model.GetUserRepoPermission(ctx, repo, poster)
-			if err != nil {
-				return roleDescriptor, err
-			}
-		}
-		permsCache[poster.ID] = perm
-	} else {
-		perm, err = access_model.GetUserRepoPermission(ctx, repo, poster)
+	if poster.IsGhost() || !poster.IsIndividual() {
+		return roleDesc, nil
+	}
+
+	roleDesc.IsPoster = issue.IsPoster(poster.ID) // check whether the comment's poster is the issue's poster
+
+	// Guess the role of the poster in the repo by permission
+	perm, hasPermCache := permsCache[poster.ID]
+	if !hasPermCache {
+		perm, err = access_model.GetIndividualUserRepoPermission(ctx, repo, poster)
 		if err != nil {
-			return roleDescriptor, err
+			return roleDesc, err
 		}
 	}
-
-	// If the poster is the actual poster of the issue, enable Poster role.
-	roleDescriptor.IsPoster = issue.IsPoster(poster.ID)
+	if permsCache != nil {
+		permsCache[poster.ID] = perm
+	}
 
 	// Check if the poster is owner of the repo.
 	if perm.IsOwner() {
-		// If the poster isn't an admin, enable the owner role.
+		// If the poster isn't a site admin, then is must be the repo's owner
 		if !poster.IsAdmin {
-			roleDescriptor.RoleInRepo = issues_model.RoleRepoOwner
-			return roleDescriptor, nil
+			roleDesc.RoleInRepo = issues_model.RoleRepoOwner
+			return roleDesc, nil
 		}
-
-		// Otherwise check if poster is the real repo admin.
-		ok, err := access_model.IsUserRealRepoAdmin(ctx, repo, poster)
+		// Otherwise (poster is site admin), check if poster is the real repo admin.
+		isRealRepoAdmin, err := access_model.IsUserRealRepoAdmin(ctx, repo, poster)
 		if err != nil {
-			return roleDescriptor, err
+			return roleDesc, err
 		}
-		if ok {
-			roleDescriptor.RoleInRepo = issues_model.RoleRepoOwner
-			return roleDescriptor, nil
+		if isRealRepoAdmin {
+			roleDesc.RoleInRepo = issues_model.RoleRepoOwner
+			return roleDesc, nil
 		}
 	}
 
 	// If repo is organization, check Member role
-	if err := repo.LoadOwner(ctx); err != nil {
-		return roleDescriptor, err
+	if err = repo.LoadOwner(ctx); err != nil {
+		return roleDesc, err
 	}
 	if repo.Owner.IsOrganization() {
 		if isMember, err := organization.IsOrganizationMember(ctx, repo.Owner.ID, poster.ID); err != nil {
-			return roleDescriptor, err
+			return roleDesc, err
 		} else if isMember {
-			roleDescriptor.RoleInRepo = issues_model.RoleRepoMember
-			return roleDescriptor, nil
+			roleDesc.RoleInRepo = issues_model.RoleRepoMember
+			return roleDesc, nil
 		}
 	}
 
 	// If the poster is the collaborator of the repo
 	if isCollaborator, err := repo_model.IsCollaborator(ctx, repo.ID, poster.ID); err != nil {
-		return roleDescriptor, err
+		return roleDesc, err
 	} else if isCollaborator {
-		roleDescriptor.RoleInRepo = issues_model.RoleRepoCollaborator
-		return roleDescriptor, nil
+		roleDesc.RoleInRepo = issues_model.RoleRepoCollaborator
+		return roleDesc, nil
 	}
 
 	hasMergedPR, err := issues_model.HasMergedPullRequestInRepo(ctx, repo.ID, poster.ID)
 	if err != nil {
-		return roleDescriptor, err
+		return roleDesc, err
 	} else if hasMergedPR {
-		roleDescriptor.RoleInRepo = issues_model.RoleRepoContributor
+		roleDesc.RoleInRepo = issues_model.RoleRepoContributor
 	} else if issue.IsPull {
 		// only display first time contributor in the first opening pull request
-		roleDescriptor.RoleInRepo = issues_model.RoleRepoFirstTimeContributor
+		roleDesc.RoleInRepo = issues_model.RoleRepoFirstTimeContributor
 	}
 
-	return roleDescriptor, nil
-}
-
-func getBranchData(ctx *context.Context, issue *issues_model.Issue) {
-	ctx.Data["BaseBranch"] = nil
-	ctx.Data["HeadBranch"] = nil
-	ctx.Data["HeadUserName"] = nil
-	ctx.Data["BaseName"] = ctx.Repo.Repository.OwnerName
-	if issue.IsPull {
-		pull := issue.PullRequest
-		ctx.Data["BaseBranch"] = pull.BaseBranch
-		ctx.Data["HeadBranch"] = pull.HeadBranch
-		ctx.Data["HeadUserName"] = pull.MustHeadUserName(ctx)
-	}
+	return roleDesc, nil
 }
 
 // checkBlockedByIssues return canRead and notPermitted
@@ -149,9 +130,9 @@ func checkBlockedByIssues(ctx *context.Context, blockers []*issues_model.Depende
 			perm = existPerm
 		} else {
 			var err error
-			perm, err = access_model.GetUserRepoPermission(ctx, &blocker.Repository, ctx.Doer)
+			perm, err = access_model.GetDoerRepoPermission(ctx, &blocker.Repository, ctx.Doer)
 			if err != nil {
-				ctx.ServerError("GetUserRepoPermission", err)
+				ctx.ServerError("GetDoerRepoPermission", err)
 				return nil, nil
 			}
 			repoPerms[blocker.RepoID] = perm
@@ -196,7 +177,7 @@ func filterXRefComments(ctx *context.Context, issue *issues_model.Issue) error {
 			if err != nil {
 				return err
 			}
-			perm, err := access_model.GetUserRepoPermission(ctx, c.RefRepo, ctx.Doer)
+			perm, err := access_model.GetDoerRepoPermission(ctx, c.RefRepo, ctx.Doer)
 			if err != nil {
 				return err
 			}
@@ -277,14 +258,29 @@ func combineLabelComments(issue *issues_model.Issue) {
 	}
 }
 
-// ViewIssue render issue view page
-func ViewIssue(ctx *context.Context) {
+func prepareIssueViewLoad(ctx *context.Context) *issues_model.Issue {
+	issue, err := issues_model.GetIssueByIndex(ctx, ctx.Repo.Repository.ID, ctx.PathParamInt64("index"))
+	if err != nil {
+		ctx.NotFoundOrServerError("GetIssueByIndex", issues_model.IsErrIssueNotExist, err)
+		return nil
+	}
+	issue.Repo = ctx.Repo.Repository
+	ctx.Data["Issue"] = issue
+
+	if err = issue.LoadPullRequest(ctx); err != nil {
+		ctx.ServerError("LoadPullRequest", err)
+		return nil
+	}
+	return issue
+}
+
+func handleViewIssueRedirectExternal(ctx *context.Context) {
 	if ctx.PathParam("type") == "issues" {
 		// If issue was requested we check if repo has external tracker and redirect
 		extIssueUnit, err := ctx.Repo.Repository.GetUnit(ctx, unit.TypeExternalTracker)
 		if err == nil && extIssueUnit != nil {
 			if extIssueUnit.ExternalTrackerConfig().ExternalTrackerStyle == markup.IssueNameStyleNumeric || extIssueUnit.ExternalTrackerConfig().ExternalTrackerStyle == "" {
-				metas := ctx.Repo.Repository.ComposeMetas(ctx)
+				metas := ctx.Repo.Repository.ComposeCommentMetas(ctx)
 				metas["index"] = ctx.PathParam("index")
 				res, err := vars.Expand(extIssueUnit.ExternalTrackerConfig().ExternalTrackerFormat, metas)
 				if err != nil {
@@ -300,18 +296,18 @@ func ViewIssue(ctx *context.Context) {
 			return
 		}
 	}
+}
 
-	issue, err := issues_model.GetIssueByIndex(ctx, ctx.Repo.Repository.ID, ctx.PathParamInt64("index"))
-	if err != nil {
-		if issues_model.IsErrIssueNotExist(err) {
-			ctx.NotFound("GetIssueByIndex", err)
-		} else {
-			ctx.ServerError("GetIssueByIndex", err)
-		}
+// ViewIssue render issue view page
+func ViewIssue(ctx *context.Context) {
+	handleViewIssueRedirectExternal(ctx)
+	if ctx.Written() {
 		return
 	}
-	if issue.Repo == nil {
-		issue.Repo = ctx.Repo.Repository
+
+	issue := prepareIssueViewLoad(ctx)
+	if ctx.Written() {
+		return
 	}
 
 	// Make sure type and URL matches.
@@ -339,16 +335,16 @@ func ViewIssue(ctx *context.Context) {
 		ctx.Data["NewIssueChooseTemplate"] = issue_service.HasTemplatesOrContactLinks(ctx.Repo.Repository, ctx.Repo.GitRepo)
 	}
 
-	ctx.Data["IsProjectsEnabled"] = ctx.Repo.CanRead(unit.TypeProjects)
+	ctx.Data["IsProjectsEnabled"] = ctx.Repo.Permission.CanRead(unit.TypeProjects)
 	ctx.Data["IsAttachmentEnabled"] = setting.Attachment.Enabled
 	upload.AddUploadContext(ctx, "comment")
 
-	if err = issue.LoadAttributes(ctx); err != nil {
+	if err := issue.LoadAttributes(ctx); err != nil {
 		ctx.ServerError("LoadAttributes", err)
 		return
 	}
 
-	if err = filterXRefComments(ctx, issue); err != nil {
+	if err := filterXRefComments(ctx, issue); err != nil {
 		ctx.ServerError("filterXRefComments", err)
 		return
 	}
@@ -357,7 +353,7 @@ func ViewIssue(ctx *context.Context) {
 
 	if ctx.IsSigned {
 		// Update issue-user.
-		if err = activities_model.SetIssueReadBy(ctx, issue.ID, ctx.Doer.ID); err != nil {
+		if err := activities_model.SetIssueReadBy(ctx, issue.ID, ctx.Doer.ID); err != nil {
 			ctx.ServerError("ReadBy", err)
 			return
 		}
@@ -369,19 +365,21 @@ func ViewIssue(ctx *context.Context) {
 	}
 	pageMetaData.LabelsData.SetSelectedLabels(issue.Labels)
 
+	prViewInfo := newPullRequestViewInfo()
 	prepareFuncs := []func(*context.Context, *issues_model.Issue){
 		prepareIssueViewContent,
-		func(ctx *context.Context, issue *issues_model.Issue) {
-			preparePullViewPullInfo(ctx, issue)
-		},
 		prepareIssueViewCommentsAndSidebarParticipants,
-		preparePullViewReviewAndMerge,
 		prepareIssueViewSidebarWatch,
 		prepareIssueViewSidebarTimeTracker,
 		prepareIssueViewSidebarDependency,
 		prepareIssueViewSidebarPin,
 	}
-
+	if issue.IsPull {
+		prepareFuncs = append(prepareFuncs,
+			prViewInfo.prepareViewInfo,
+			prViewInfo.prepareMergeBox,
+		)
+	}
 	for _, prepareFunc := range prepareFuncs {
 		prepareFunc(ctx, issue)
 		if ctx.Written() {
@@ -394,16 +392,16 @@ func ViewIssue(ctx *context.Context) {
 		if issue.PullRequest.HasMerged {
 			ctx.Data["DisableStatusChange"] = issue.PullRequest.HasMerged
 		} else {
-			ctx.Data["DisableStatusChange"] = ctx.Data["IsPullRequestBroken"] == true && issue.IsClosed
+			ctx.Data["DisableStatusChange"] = prViewInfo.IsPullRequestBroken && issue.IsClosed
 		}
 	}
 
 	ctx.Data["Reference"] = issue.Ref
-	ctx.Data["SignInLink"] = setting.AppSubURL + "/user/login?redirect_to=" + url.QueryEscape(ctx.Data["Link"].(string))
+	ctx.Data["SignInLink"] = middleware.RedirectLinkUserLogin(ctx.Req)
 	ctx.Data["IsIssuePoster"] = ctx.IsSigned && issue.IsPoster(ctx.Doer.ID)
-	ctx.Data["HasIssuesOrPullsWritePermission"] = ctx.Repo.CanWriteIssuesOrPulls(issue.IsPull)
-	ctx.Data["HasProjectsWritePermission"] = ctx.Repo.CanWrite(unit.TypeProjects)
-	ctx.Data["IsRepoAdmin"] = ctx.IsSigned && (ctx.Repo.IsAdmin() || ctx.Doer.IsAdmin)
+	ctx.Data["HasIssuesOrPullsWritePermission"] = ctx.Repo.Permission.CanWriteIssuesOrPulls(issue.IsPull)
+	ctx.Data["HasProjectsWritePermission"] = ctx.Repo.Permission.CanWrite(unit.TypeProjects)
+	ctx.Data["IsRepoAdmin"] = ctx.IsSigned && (ctx.Repo.Permission.IsAdmin() || ctx.Doer.IsAdmin)
 	ctx.Data["LockReasons"] = setting.Repository.Issue.LockReasons
 	ctx.Data["RefEndName"] = git.RefName(issue.Ref).ShortName()
 
@@ -418,13 +416,43 @@ func ViewIssue(ctx *context.Context) {
 		return user_service.CanBlockUser(ctx, ctx.Doer, blocker, blockee)
 	}
 
+	if !setting.IsProd && issue.PullRequest != nil && !issue.PullRequest.IsChecking() && prViewInfo.MergeBoxData != nil {
+		prViewInfo.MergeBoxData.ReloadingInterval = 1 // in dev env, force using the reloading logic to make sure it won't break
+	}
+
 	ctx.HTML(http.StatusOK, tplIssueView)
 }
 
+func ViewPullMergeBox(ctx *context.Context) {
+	issue := prepareIssueViewLoad(ctx)
+	if ctx.Written() {
+		return
+	}
+	if !issue.IsPull {
+		ctx.NotFound(nil)
+		return
+	}
+	prViewInfo := newPullRequestViewInfo()
+	prViewInfo.prepareViewInfo(ctx, issue)
+	if ctx.Written() {
+		return
+	}
+	prViewInfo.prepareMergeBox(ctx, issue)
+	if ctx.Written() {
+		return
+	}
+	ctx.Data["PullMergeBoxReloading"] = issue.PullRequest.IsChecking()
+
+	// TODO: it should use a dedicated struct to render the pull merge box, to make sure all data is prepared correctly
+	ctx.Data["IsIssuePoster"] = ctx.IsSigned && issue.IsPoster(ctx.Doer.ID)
+	ctx.Data["HasIssuesOrPullsWritePermission"] = ctx.Repo.Permission.CanWriteIssuesOrPulls(issue.IsPull)
+	ctx.HTML(http.StatusOK, tplPullMergeBox)
+}
+
 func prepareIssueViewSidebarDependency(ctx *context.Context, issue *issues_model.Issue) {
-	if issue.IsPull && !ctx.Repo.CanRead(unit.TypeIssues) {
+	if issue.IsPull && !ctx.Repo.Permission.CanRead(unit.TypeIssues) {
 		ctx.Data["IssueDependencySearchType"] = "pulls"
-	} else if !issue.IsPull && !ctx.Repo.CanRead(unit.TypePullRequests) {
+	} else if !issue.IsPull && !ctx.Repo.Permission.CanRead(unit.TypePullRequests) {
 		ctx.Data["IssueDependencySearchType"] = "issues"
 	} else {
 		ctx.Data["IssueDependencySearchType"] = "all"
@@ -437,7 +465,7 @@ func prepareIssueViewSidebarDependency(ctx *context.Context, issue *issues_model
 	ctx.Data["AllowCrossRepositoryDependencies"] = setting.Service.AllowCrossRepositoryDependencies
 
 	// Get Dependencies
-	blockedBy, err := issue.BlockedByDependencies(ctx, db.ListOptions{})
+	blockedBy, _, err := issue.BlockedByDependencies(ctx, db.ListOptions{})
 	if err != nil {
 		ctx.ServerError("BlockedByDependencies", err)
 		return
@@ -456,16 +484,13 @@ func prepareIssueViewSidebarDependency(ctx *context.Context, issue *issues_model
 	ctx.Data["BlockingDependencies"], ctx.Data["BlockingDependenciesNotPermitted"] = checkBlockedByIssues(ctx, blocking)
 }
 
-func preparePullViewSigning(ctx *context.Context, issue *issues_model.Issue) {
-	if !issue.IsPull {
-		return
-	}
-	pull := issue.PullRequest
-	ctx.Data["WillSign"] = false
+func (prInfo *pullRequestViewInfo) prepareMergeBoxRequireSigning(ctx *context.Context) {
+	pull := prInfo.issue.PullRequest
+	willSign := false
 	if ctx.Doer != nil {
-		sign, key, _, err := asymkey_service.SignMerge(ctx, pull, ctx.Doer, pull.BaseRepo.RepoPath(), pull.BaseBranch, pull.GetGitRefName())
-		ctx.Data["WillSign"] = sign
-		ctx.Data["SigningKey"] = key
+		sign, key, _, err := asymkey_service.SignMerge(ctx, pull, ctx.Doer, ctx.Repo.GitRepo)
+		willSign = sign
+		ctx.Data["SigningKeyMergeDisplay"] = asymkey_model.GetDisplaySigningKey(key)
 		if err != nil {
 			if asymkey_service.IsErrWontSign(err) {
 				ctx.Data["WontSignReason"] = err.(*asymkey_service.ErrWontSign).Reason
@@ -477,6 +502,8 @@ func preparePullViewSigning(ctx *context.Context, issue *issues_model.Issue) {
 	} else {
 		ctx.Data["WontSignReason"] = "not_signed_in"
 	}
+	ctx.Data["WillSign"] = willSign
+	prInfo.MergeBoxData.willSign = willSign
 }
 
 func prepareIssueViewSidebarWatch(ctx *context.Context, issue *issues_model.Issue) {
@@ -526,15 +553,14 @@ func prepareIssueViewSidebarTimeTracker(ctx *context.Context, issue *issues_mode
 	}
 }
 
-func preparePullViewDeleteBranch(ctx *context.Context, issue *issues_model.Issue, canDelete bool) {
-	if !issue.IsPull {
-		return
-	}
-	pull := issue.PullRequest
+func (prInfo *pullRequestViewInfo) prepareMergeBoxDeleteBranch(ctx *context.Context, canDelete bool) {
+	pull := prInfo.issue.PullRequest
 	isPullBranchDeletable := canDelete &&
 		pull.HeadRepo != nil &&
-		git.IsBranchExist(ctx, pull.HeadRepo.RepoPath(), pull.HeadBranch) &&
-		(!pull.HasMerged || ctx.Data["HeadBranchCommitID"] == ctx.Data["PullHeadCommitID"])
+		(!pull.HasMerged || prInfo.HeadBranchCommitID == prInfo.CompareInfo.HeadCommitID)
+	if isPullBranchDeletable {
+		isPullBranchDeletable, _ = git_model.IsBranchExist(ctx, pull.HeadRepo.ID, pull.HeadBranch)
+	}
 
 	if isPullBranchDeletable && pull.HasMerged {
 		exist, err := issues_model.HasUnmergedPullRequestsByHeadInfo(ctx, pull.HeadRepoID, pull.HeadBranch)
@@ -546,11 +572,16 @@ func preparePullViewDeleteBranch(ctx *context.Context, issue *issues_model.Issue
 		isPullBranchDeletable = !exist
 	}
 	ctx.Data["IsPullBranchDeletable"] = isPullBranchDeletable
+	prInfo.MergeBoxData.isPullBranchDeletable = isPullBranchDeletable
 }
 
 func prepareIssueViewSidebarPin(ctx *context.Context, issue *issues_model.Issue) {
 	var pinAllowed bool
-	if !issue.IsPinned() {
+	if err := issue.LoadPinOrder(ctx); err != nil {
+		ctx.ServerError("LoadPinOrder", err)
+		return
+	}
+	if issue.PinOrder == 0 {
 		var err error
 		pinAllowed, err = issues_model.IsNewPinAllowed(ctx, issue.RepoID, issue.IsPull)
 		if err != nil {
@@ -596,7 +627,9 @@ func prepareIssueViewCommentsAndSidebarParticipants(ctx *context.Context, issue 
 		comment.Issue = issue
 
 		if comment.Type == issues_model.CommentTypeComment || comment.Type == issues_model.CommentTypeReview {
-			rctx := renderhelper.NewRenderContextRepoComment(ctx, issue.Repo)
+			rctx := renderhelper.NewRenderContextRepoComment(ctx, issue.Repo, renderhelper.RepoCommentOptions{
+				FootnoteContextID: strconv.FormatInt(comment.ID, 10),
+			})
 			comment.RenderedContent, err = markdown.RenderString(rctx, comment.Content)
 			if err != nil {
 				ctx.ServerError("RenderString", err)
@@ -672,7 +705,9 @@ func prepareIssueViewCommentsAndSidebarParticipants(ctx *context.Context, issue 
 				}
 			}
 		} else if comment.Type.HasContentSupport() {
-			rctx := renderhelper.NewRenderContextRepoComment(ctx, issue.Repo)
+			rctx := renderhelper.NewRenderContextRepoComment(ctx, issue.Repo, renderhelper.RepoCommentOptions{
+				FootnoteContextID: strconv.FormatInt(comment.ID, 10),
+			})
 			comment.RenderedContent, err = markdown.RenderString(rctx, comment.Content)
 			if err != nil {
 				ctx.ServerError("RenderString", err)
@@ -723,12 +758,15 @@ func prepareIssueViewCommentsAndSidebarParticipants(ctx *context.Context, issue 
 			}
 		} else if comment.Type == issues_model.CommentTypePullRequestPush {
 			participants = addParticipant(comment.Poster, participants)
-			if err = comment.LoadPushCommits(ctx); err != nil {
-				ctx.ServerError("LoadPushCommits", err)
+			if err = issue_service.LoadCommentPushCommits(ctx, comment); err != nil {
+				ctx.ServerError("LoadCommentPushCommits", err)
 				return
 			}
-			if !ctx.Repo.CanRead(unit.TypeActions) {
+			if !ctx.Repo.Permission.CanRead(unit.TypeActions) {
 				for _, commit := range comment.Commits {
+					if commit.Status == nil {
+						continue
+					}
 					commit.Status.HideActionsURL(ctx)
 					git_model.CommitStatusesHideActionsURL(ctx, commit.Statuses)
 				}
@@ -736,14 +774,14 @@ func prepareIssueViewCommentsAndSidebarParticipants(ctx *context.Context, issue 
 		} else if comment.Type == issues_model.CommentTypeAddTimeManual ||
 			comment.Type == issues_model.CommentTypeStopTracking ||
 			comment.Type == issues_model.CommentTypeDeleteTimeManual {
-			// drop error since times could be pruned from DB..
+			// drop error since times could be pruned from DB
 			_ = comment.LoadTime(ctx)
 			if comment.Content != "" {
 				// Content before v1.21 did store the formatted string instead of seconds,
 				// so "|" is used as delimiter to mark the new format
 				if comment.Content[0] != '|' {
 					// handle old time comments that have formatted text stored
-					comment.RenderedContent = templates.SanitizeHTML(comment.Content)
+					comment.RenderedContent = markup.Sanitize(comment.Content)
 					comment.Content = ""
 				} else {
 					// else it's just a duration in seconds to pass on to the frontend
@@ -782,25 +820,47 @@ func prepareIssueViewCommentsAndSidebarParticipants(ctx *context.Context, issue 
 	ctx.Data["NumParticipants"] = len(participants)
 }
 
-func preparePullViewReviewAndMerge(ctx *context.Context, issue *issues_model.Issue) {
-	getBranchData(ctx, issue)
-	if !issue.IsPull {
-		return
+func (prInfo *pullRequestViewInfo) prepareMergeBox(ctx *context.Context, issue *issues_model.Issue) {
+	if prInfo.issue != issue {
+		panic("impossible, issue must be the same")
 	}
 
 	pull := issue.PullRequest
-	pull.Issue = issue
+	data := &pullMergeBoxData{}
+	prInfo.MergeBoxData = data
+
+	statusCheckData := prInfo.StatusCheckData
+	if statusCheckData == nil {
+		statusCheckData = &pullCommitStatusCheckData{} // make the following logic easier, no need to keep checking "nil"
+	}
+
 	canDelete := false
 	allowMerge := false
 	canWriteToHeadRepo := false
+
+	pull_service.StartPullRequestCheckOnView(ctx, pull)
+
+	if !prInfo.IsPullRequestBroken {
+		var err error
+		ctx.Data["UpdateAllowed"], ctx.Data["UpdateByRebaseAllowed"], err = pull_service.IsUserAllowedToUpdate(ctx, pull, ctx.Doer)
+		if err != nil {
+			ctx.ServerError("IsUserAllowedToUpdate", err)
+			return
+		}
+	}
+
+	if pull.IsFilesConflicted() {
+		ctx.Data["IsPullFilesConflicted"] = true
+		ctx.Data["ConflictedFiles"] = pull.ConflictedFiles
+	}
 
 	if ctx.IsSigned {
 		if err := pull.LoadHeadRepo(ctx); err != nil {
 			log.Error("LoadHeadRepo: %v", err)
 		} else if pull.HeadRepo != nil {
-			perm, err := access_model.GetUserRepoPermission(ctx, pull.HeadRepo, ctx.Doer)
+			perm, err := access_model.GetDoerRepoPermission(ctx, pull.HeadRepo, ctx.Doer)
 			if err != nil {
-				ctx.ServerError("GetUserRepoPermission", err)
+				ctx.ServerError("GetDoerRepoPermission", err)
 				return
 			}
 			if perm.CanWrite(unit.TypeCode) {
@@ -820,9 +880,9 @@ func preparePullViewReviewAndMerge(ctx *context.Context, issue *issues_model.Iss
 		if err := pull.LoadBaseRepo(ctx); err != nil {
 			log.Error("LoadBaseRepo: %v", err)
 		}
-		perm, err := access_model.GetUserRepoPermission(ctx, pull.BaseRepo, ctx.Doer)
+		perm, err := access_model.GetDoerRepoPermission(ctx, pull.BaseRepo, ctx.Doer)
 		if err != nil {
-			ctx.ServerError("GetUserRepoPermission", err)
+			ctx.ServerError("GetDoerRepoPermission", err)
 			return
 		}
 		if !canWriteToHeadRepo { // maintainers maybe allowed to push to head repo even if they can't write to it
@@ -840,117 +900,102 @@ func preparePullViewReviewAndMerge(ctx *context.Context, issue *issues_model.Iss
 		}
 	}
 
-	ctx.Data["CanWriteToHeadRepo"] = canWriteToHeadRepo
-	ctx.Data["ShowMergeInstructions"] = canWriteToHeadRepo
+	data.ReloadingInterval = util.Iif(pull.IsChecking(), 2000, 0)
+	data.ShowMergeInstructions = canWriteToHeadRepo
+	data.ShowPullCommands = pull.HeadRepo != nil && !pull.HasMerged && !issue.IsClosed
 	ctx.Data["AllowMerge"] = allowMerge
 
-	prUnit, err := issue.Repo.GetUnit(ctx, unit.TypePullRequests)
-	if err != nil {
-		ctx.ServerError("GetUnit", err)
-		return
-	}
-	prConfig := prUnit.PullRequestsConfig()
-
-	ctx.Data["AutodetectManualMerge"] = prConfig.AutodetectManualMerge
-
-	var mergeStyle repo_model.MergeStyle
-	// Check correct values and select default
-	if ms, ok := ctx.Data["MergeStyle"].(repo_model.MergeStyle); !ok ||
-		!prConfig.IsMergeStyleAllowed(ms) {
-		defaultMergeStyle := prConfig.GetDefaultMergeStyle()
-		if prConfig.IsMergeStyleAllowed(defaultMergeStyle) && !ok {
-			mergeStyle = defaultMergeStyle
-		} else if prConfig.AllowMerge {
-			mergeStyle = repo_model.MergeStyleMerge
-		} else if prConfig.AllowRebase {
-			mergeStyle = repo_model.MergeStyleRebase
-		} else if prConfig.AllowRebaseMerge {
-			mergeStyle = repo_model.MergeStyleRebaseMerge
-		} else if prConfig.AllowSquash {
-			mergeStyle = repo_model.MergeStyleSquash
-		} else if prConfig.AllowFastForwardOnly {
-			mergeStyle = repo_model.MergeStyleFastForwardOnly
-		} else if prConfig.AllowManualMerge {
-			mergeStyle = repo_model.MergeStyleManuallyMerged
-		}
-	}
-
-	ctx.Data["MergeStyle"] = mergeStyle
-
-	defaultMergeMessage, defaultMergeBody, err := pull_service.GetDefaultMergeMessage(ctx, ctx.Repo.GitRepo, pull, mergeStyle)
-	if err != nil {
-		ctx.ServerError("GetDefaultMergeMessage", err)
-		return
-	}
-	ctx.Data["DefaultMergeMessage"] = defaultMergeMessage
-	ctx.Data["DefaultMergeBody"] = defaultMergeBody
-
-	defaultSquashMergeMessage, defaultSquashMergeBody, err := pull_service.GetDefaultMergeMessage(ctx, ctx.Repo.GitRepo, pull, repo_model.MergeStyleSquash)
-	if err != nil {
-		ctx.ServerError("GetDefaultSquashMergeMessage", err)
-		return
-	}
-	ctx.Data["DefaultSquashMergeMessage"] = defaultSquashMergeMessage
-	ctx.Data["DefaultSquashMergeBody"] = defaultSquashMergeBody
-
-	pb, err := git_model.GetFirstMatchProtectedBranchRule(ctx, pull.BaseRepoID, pull.BaseBranch)
-	if err != nil {
-		ctx.ServerError("LoadProtectedBranch", err)
-		return
-	}
-
+	pb := prInfo.ProtectedBranchRule
 	if pb != nil {
 		pb.Repo = pull.BaseRepo
 		ctx.Data["ProtectedBranch"] = pb
-		ctx.Data["IsBlockedByApprovals"] = !issues_model.HasEnoughApprovals(ctx, pb, pull)
-		ctx.Data["IsBlockedByRejection"] = issues_model.MergeBlockedByRejectedReview(ctx, pb, pull)
-		ctx.Data["IsBlockedByOfficialReviewRequests"] = issues_model.MergeBlockedByOfficialReviewRequests(ctx, pb, pull)
-		ctx.Data["IsBlockedByOutdatedBranch"] = issues_model.MergeBlockedByOutdatedBranch(pb, pull)
+
+		data.isBlockedByApprovals = !issues_model.HasEnoughApprovals(ctx, pb, pull)
+		ctx.Data["IsBlockedByApprovals"] = data.isBlockedByApprovals
+
+		data.isBlockedByRejection = issues_model.MergeBlockedByRejectedReview(ctx, pb, pull)
+		ctx.Data["IsBlockedByRejection"] = data.isBlockedByRejection
+
+		data.isBlockedByOfficialReviewRequests = issues_model.MergeBlockedByOfficialReviewRequests(ctx, pb, pull)
+		ctx.Data["IsBlockedByOfficialReviewRequests"] = data.isBlockedByOfficialReviewRequests
+
+		data.isBlockedByOutdatedBranch = issues_model.MergeBlockedByOutdatedBranch(pb, pull)
+		ctx.Data["IsBlockedByOutdatedBranch"] = data.isBlockedByOutdatedBranch
+
+		data.isBlockedByChangedProtectedFiles = len(pull.ChangedProtectedFiles) != 0
+		ctx.Data["IsBlockedByChangedProtectedFiles"] = data.isBlockedByChangedProtectedFiles
+
+		data.requireSigned = pb.RequireSignedCommits
+		ctx.Data["RequireSigned"] = data.requireSigned
+
 		ctx.Data["GrantedApprovals"] = issues_model.GetGrantedApprovalsCount(ctx, pb, pull)
-		ctx.Data["RequireSigned"] = pb.RequireSignedCommits
 		ctx.Data["ChangedProtectedFiles"] = pull.ChangedProtectedFiles
-		ctx.Data["IsBlockedByChangedProtectedFiles"] = len(pull.ChangedProtectedFiles) != 0
 		ctx.Data["ChangedProtectedFilesNum"] = len(pull.ChangedProtectedFiles)
 		ctx.Data["RequireApprovalsWhitelist"] = pb.EnableApprovalsWhitelist
 	}
 
-	preparePullViewSigning(ctx, issue)
+	prInfo.prepareMergeBoxRequireSigning(ctx)
 	if ctx.Written() {
 		return
 	}
 
-	preparePullViewDeleteBranch(ctx, issue, canDelete)
+	prInfo.prepareMergeBoxDeleteBranch(ctx, canDelete)
 	if ctx.Written() {
 		return
 	}
+
+	prConfig := issue.Repo.MustGetUnit(ctx, unit.TypePullRequests).PullRequestsConfig()
+	data.AutodetectManualMerge = prConfig.AutodetectManualMerge
 
 	stillCanManualMerge := func() bool {
 		if pull.HasMerged || issue.IsClosed || !ctx.IsSigned {
 			return false
 		}
-		if pull.CanAutoMerge() || pull.IsWorkInProgress(ctx) || pull.IsChecking() {
+		if pull.IsStatusMergeable() || pull.IsWorkInProgress(ctx) || pull.IsChecking() {
 			return false
 		}
-		if allowMerge && prConfig.AllowManualMerge {
-			return true
-		}
-
-		return false
+		return allowMerge && prConfig.AllowManualMerge
 	}
 
 	ctx.Data["StillCanManualMerge"] = stillCanManualMerge()
 
-	// Check if there is a pending pr merge
-	ctx.Data["HasPendingPullRequestMerge"], ctx.Data["PendingPullRequestMerge"], err = pull_model.GetScheduledMergeByPullID(ctx, pull.ID)
-	if err != nil {
-		ctx.ServerError("GetScheduledMergeByPullID", err)
-		return
-	}
+	enableStatusCheck := pb != nil && pb.EnableStatusCheck
+	ctx.Data["EnableStatusCheck"] = enableStatusCheck
+
+	// Only show the merge box if the PR is not merged, or the branch is deletable.
+	// Otherwise, there is nothing to do, because the PR view page already contains enough information.
+	data.ShowMergeBox = !pull.HasMerged || data.isPullBranchDeletable
+
+	isRepoAdmin := ctx.IsSigned && (ctx.Repo.Permission.IsAdmin() || ctx.Doer.IsAdmin)
+
+	// admin can merge without checks, writer can merge when checks succeed
+	// admin and writer both can make an auto merge schedule (not affected by overridable blockers)
+	data.hasStatusCheckBlocker = enableStatusCheck && !statusCheckData.RequiredChecksState.IsSuccess()
+
+	// this logic is from:
+	// {{$notAllOverridableChecksOk := or .IsBlockedByApprovals .IsBlockedByRejection .IsBlockedByOfficialReviewRequests .IsBlockedByOutdatedBranch .IsBlockedByChangedProtectedFiles (and .EnableStatusCheck (not $requiredStatusCheckState.IsSuccess))}}
+	// HINT: if a PR's status is not mergeable, then it is a non-overridable blocker, such logic is handled separately (see IsStatusMergeable)
+	data.HasOverridableBlockers = data.isBlockedByApprovals || data.isBlockedByRejection ||
+		data.isBlockedByOfficialReviewRequests || data.isBlockedByOutdatedBranch || data.isBlockedByChangedProtectedFiles ||
+		data.hasStatusCheckBlocker
+
+	// this logic is from:
+	// {{$canMergeNow := and (or (and (not $.ProtectedBranch.BlockAdminMergeOverride) $.IsRepoAdmin) (not $notAllOverridableChecksOk)) (or (not .AllowMerge) (not .RequireSigned) .WillSign)}}
+	// HINT: legacy "(not .AllowMerge)" is not right (always false, does nothing), fixed here
+	// CanMergeNow means: if the doer has write permission, whether the PR can be merged now
+	adminCanOverrideBlockers := (pb == nil || !pb.BlockAdminMergeOverride) && isRepoAdmin
+	data.CanMergeNow = (!data.HasOverridableBlockers || adminCanOverrideBlockers) && // status checks are satisfied
+		(!data.requireSigned || data.willSign) // signing requirement is satisfied
+
+	ctx.Data["PullMergeBoxData"] = prInfo.MergeBoxData
+	prInfo.prepareMergeBoxFormProps(ctx)
 }
 
 func prepareIssueViewContent(ctx *context.Context, issue *issues_model.Issue) {
 	var err error
-	rctx := renderhelper.NewRenderContextRepoComment(ctx, ctx.Repo.Repository)
+	rctx := renderhelper.NewRenderContextRepoComment(ctx, ctx.Repo.Repository, renderhelper.RepoCommentOptions{
+		FootnoteContextID: "0", // Set footnote context ID to 0 for the issue content
+	})
 	issue.RenderedContent, err = markdown.RenderString(rctx, issue.Content)
 	if err != nil {
 		ctx.ServerError("RenderString", err)
@@ -960,5 +1005,4 @@ func prepareIssueViewContent(ctx *context.Context, issue *issues_model.Issue) {
 		ctx.ServerError("roleDescriptor", err)
 		return
 	}
-	ctx.Data["Issue"] = issue
 }

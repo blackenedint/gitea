@@ -6,7 +6,6 @@ package setting
 
 import (
 	"errors"
-	"fmt"
 	"net/http"
 	"time"
 
@@ -36,15 +35,14 @@ const (
 
 // Account renders change user's password, user's email and user suicide page
 func Account(ctx *context.Context) {
-	if user_model.IsFeatureDisabledWithLoginType(ctx.Doer, setting.UserFeatureManageCredentials, setting.UserFeatureDeletion) && !setting.Service.EnableNotifyMail {
-		ctx.NotFound("Not Found", fmt.Errorf("account setting are not allowed to be changed"))
+	if user_model.IsFeatureDisabledWithLoginType(ctx.Doer, setting.UserFeatureManageCredentials, setting.UserFeatureDeletion) {
+		ctx.NotFound(errors.New("account setting are not allowed to be changed"))
 		return
 	}
 
 	ctx.Data["Title"] = ctx.Tr("settings.account")
 	ctx.Data["PageIsSettingsAccount"] = true
 	ctx.Data["Email"] = ctx.Doer.Email
-	ctx.Data["EnableNotifyMail"] = setting.Service.EnableNotifyMail
 
 	loadAccountData(ctx)
 
@@ -54,15 +52,14 @@ func Account(ctx *context.Context) {
 // AccountPost response for change user's password
 func AccountPost(ctx *context.Context) {
 	if user_model.IsFeatureDisabledWithLoginType(ctx.Doer, setting.UserFeatureManageCredentials) {
-		ctx.NotFound("Not Found", fmt.Errorf("password setting is not allowed to be changed"))
+		ctx.NotFound(errors.New("password setting is not allowed to be changed"))
 		return
 	}
 
 	form := web.GetForm(ctx).(*forms.ChangePasswordForm)
-	ctx.Data["Title"] = ctx.Tr("settings")
+	ctx.Data["Title"] = ctx.Tr("settings_title")
 	ctx.Data["PageIsSettingsAccount"] = true
 	ctx.Data["Email"] = ctx.Doer.Email
-	ctx.Data["EnableNotifyMail"] = setting.Service.EnableNotifyMail
 
 	if ctx.HasError() {
 		loadAccountData(ctx)
@@ -105,19 +102,23 @@ func AccountPost(ctx *context.Context) {
 // EmailPost response for change user's email
 func EmailPost(ctx *context.Context) {
 	if user_model.IsFeatureDisabledWithLoginType(ctx.Doer, setting.UserFeatureManageCredentials) {
-		ctx.NotFound("Not Found", fmt.Errorf("emails are not allowed to be changed"))
+		ctx.NotFound(errors.New("emails are not allowed to be changed"))
 		return
 	}
 
 	form := web.GetForm(ctx).(*forms.AddEmailForm)
-	ctx.Data["Title"] = ctx.Tr("settings")
+	ctx.Data["Title"] = ctx.Tr("settings_title")
 	ctx.Data["PageIsSettingsAccount"] = true
 	ctx.Data["Email"] = ctx.Doer.Email
-	ctx.Data["EnableNotifyMail"] = setting.Service.EnableNotifyMail
 
 	// Make email address primary.
 	if ctx.FormString("_method") == "PRIMARY" {
-		if err := user_model.MakeActiveEmailPrimary(ctx, ctx.FormInt64("id")); err != nil {
+		if err := user_model.MakeActiveEmailPrimary(ctx, ctx.Doer.ID, ctx.FormInt64("id")); err != nil {
+			if user_model.IsErrEmailAddressNotExist(err) {
+				ctx.Flash.Error(ctx.Tr("settings.email_primary_not_found"))
+				ctx.Redirect(setting.AppSubURL + "/user/settings/account")
+				return
+			}
 			ctx.ServerError("MakeEmailPrimary", err)
 			return
 		}
@@ -173,30 +174,6 @@ func EmailPost(ctx *context.Context) {
 		ctx.Redirect(setting.AppSubURL + "/user/settings/account")
 		return
 	}
-	// Set Email Notification Preference
-	if ctx.FormString("_method") == "NOTIFICATION" {
-		preference := ctx.FormString("preference")
-		if !(preference == user_model.EmailNotificationsEnabled ||
-			preference == user_model.EmailNotificationsOnMention ||
-			preference == user_model.EmailNotificationsDisabled ||
-			preference == user_model.EmailNotificationsAndYourOwn) {
-			log.Error("Email notifications preference change returned unrecognized option %s: %s", preference, ctx.Doer.Name)
-			ctx.ServerError("SetEmailPreference", errors.New("option unrecognized"))
-			return
-		}
-		opts := &user.UpdateOptions{
-			EmailNotificationsPreference: optional.Some(preference),
-		}
-		if err := user.UpdateUser(ctx, ctx.Doer, opts); err != nil {
-			log.Error("Set Email Notifications failed: %v", err)
-			ctx.ServerError("UpdateUser", err)
-			return
-		}
-		log.Trace("Email notifications preference made %s: %s", preference, ctx.Doer.Name)
-		ctx.Flash.Success(ctx.Tr("settings.email_preference_set_success"))
-		ctx.Redirect(setting.AppSubURL + "/user/settings/account")
-		return
-	}
 
 	if ctx.HasError() {
 		loadAccountData(ctx)
@@ -209,11 +186,11 @@ func EmailPost(ctx *context.Context) {
 		if user_model.IsErrEmailAlreadyUsed(err) {
 			loadAccountData(ctx)
 
-			ctx.RenderWithErr(ctx.Tr("form.email_been_used"), tplSettingsAccount, &form)
+			ctx.RenderWithErrDeprecated(ctx.Tr("form.email_been_used"), tplSettingsAccount, &form)
 		} else if user_model.IsErrEmailCharIsNotSupported(err) || user_model.IsErrEmailInvalid(err) {
 			loadAccountData(ctx)
 
-			ctx.RenderWithErr(ctx.Tr("form.email_invalid"), tplSettingsAccount, &form)
+			ctx.RenderWithErrDeprecated(ctx.Tr("form.email_invalid"), tplSettingsAccount, &form)
 		} else {
 			ctx.ServerError("AddEmailAddresses", err)
 		}
@@ -239,7 +216,7 @@ func EmailPost(ctx *context.Context) {
 // DeleteEmail response for delete user's email
 func DeleteEmail(ctx *context.Context) {
 	if user_model.IsFeatureDisabledWithLoginType(ctx.Doer, setting.UserFeatureManageCredentials) {
-		ctx.NotFound("Not Found", fmt.Errorf("emails are not allowed to be changed"))
+		ctx.NotFound(errors.New("emails are not allowed to be changed"))
 		return
 	}
 	email, err := user_model.GetEmailAddressByID(ctx, ctx.Doer.ID, ctx.FormInt64("id"))
@@ -261,33 +238,32 @@ func DeleteEmail(ctx *context.Context) {
 // DeleteAccount render user suicide page and response for delete user himself
 func DeleteAccount(ctx *context.Context) {
 	if user_model.IsFeatureDisabledWithLoginType(ctx.Doer, setting.UserFeatureDeletion) {
-		ctx.Error(http.StatusNotFound)
+		ctx.HTTPError(http.StatusNotFound)
 		return
 	}
 
-	ctx.Data["Title"] = ctx.Tr("settings")
+	ctx.Data["Title"] = ctx.Tr("settings_title")
 	ctx.Data["PageIsSettingsAccount"] = true
 	ctx.Data["Email"] = ctx.Doer.Email
-	ctx.Data["EnableNotifyMail"] = setting.Service.EnableNotifyMail
 
 	if _, _, err := auth.UserSignIn(ctx, ctx.Doer.Name, ctx.FormString("password")); err != nil {
 		switch {
 		case user_model.IsErrUserNotExist(err):
 			loadAccountData(ctx)
 
-			ctx.RenderWithErr(ctx.Tr("form.user_not_exist"), tplSettingsAccount, nil)
+			ctx.RenderWithErrDeprecated(ctx.Tr("form.user_not_exist"), tplSettingsAccount, nil)
 		case errors.Is(err, smtp.ErrUnsupportedLoginType):
 			loadAccountData(ctx)
 
-			ctx.RenderWithErr(ctx.Tr("form.unsupported_login_type"), tplSettingsAccount, nil)
+			ctx.RenderWithErrDeprecated(ctx.Tr("form.unsupported_login_type"), tplSettingsAccount, nil)
 		case errors.As(err, &db.ErrUserPasswordNotSet{}):
 			loadAccountData(ctx)
 
-			ctx.RenderWithErr(ctx.Tr("form.unset_password"), tplSettingsAccount, nil)
+			ctx.RenderWithErrDeprecated(ctx.Tr("form.unset_password"), tplSettingsAccount, nil)
 		case errors.As(err, &db.ErrUserPasswordInvalid{}):
 			loadAccountData(ctx)
 
-			ctx.RenderWithErr(ctx.Tr("form.enterred_invalid_password"), tplSettingsAccount, nil)
+			ctx.RenderWithErrDeprecated(ctx.Tr("form.enterred_invalid_password"), tplSettingsAccount, nil)
 		default:
 			ctx.ServerError("UserSignIn", err)
 		}
@@ -343,10 +319,8 @@ func loadAccountData(ctx *context.Context) {
 		emails[i] = &email
 	}
 	ctx.Data["Emails"] = emails
-	ctx.Data["EmailNotificationsPreference"] = ctx.Doer.EmailNotificationsPreference
 	ctx.Data["ActivationsPending"] = pendingActivation
 	ctx.Data["CanAddEmails"] = !pendingActivation || !setting.Service.RegisterEmailConfirm
-	ctx.Data["UserDisabledFeatures"] = user_model.DisabledFeaturesWithLoginType(ctx.Doer)
 
 	if setting.Service.UserDeleteWithCommentsMaxTime != 0 {
 		ctx.Data["UserDeleteWithCommentsMaxTime"] = setting.Service.UserDeleteWithCommentsMaxTime.String()
