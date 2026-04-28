@@ -167,7 +167,8 @@ func (d discordConvertor) Push(p *api.PushPayload) (DiscordPayload, error) {
 
 		// a limit of 50 is set because GitHub does the same
 		// tony; changed, limit to 120 instead of 50, 50 is just too short.
-		if utf8.RuneCountInString(message) > 120 {
+		// tony; changed again; double it.
+		if utf8.RuneCountInString(message) > 240 {
 			message = fmt.Sprintf("%.117s...", message)
 		}
 		fmt.Fprintf(&text, "[%s](%s) %s - %s", commit.ID[:7], commit.URL, message, commit.Author.Name)
